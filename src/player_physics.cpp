@@ -77,7 +77,7 @@ Vec2 get_player_render_pos() { return g_physics.render_pos; }
 float get_player_render_y() { return g_physics.render_pos_y; }
 
 // ============= Movement / Collision =============
-static float approach(float cur, float target, float max_delta) {
+float approach(float cur, float target, float max_delta) {
     float d = target - cur;
     if (d > max_delta) return cur + max_delta;
     if (d < -max_delta) return cur - max_delta;
@@ -130,7 +130,7 @@ static int find_spawn_x(const World& world) {
     return mid;
 }
 
-static void spawn_player_at_base() {
+void spawn_player_at_base() {
     // Spawn player at the base
     g_player.pos.x = (float)g_base_x;
     g_player.pos.y = (float)g_base_y;
@@ -151,7 +151,7 @@ static void spawn_player_at_base() {
 }
 
 // Respawn automatico na base quando o jogador morre
-static void respawn_player_at_base(const char* death_reason) {
+void respawn_player_at_base(const char* death_reason) {
     spawn_player_at_base();
     
     // HP parcial apos respawn
@@ -175,7 +175,7 @@ static void respawn_player_at_base(const char* death_reason) {
     g_base_oxygen = std::max(0.0f, g_base_oxygen - 5.0f);
 }
 
-static void spawn_player_new_game(World& world) {
+void spawn_player_new_game(World& world) {
     // Generate base first (sets g_base_x and g_base_y)
     generate_base(world);
     
@@ -924,7 +924,7 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     p.can_jump = !input.jump_held;
 }
 
-static void reset_player_physics_runtime(bool clear_timers) {
+void reset_player_physics_runtime(bool clear_timers) {
     g_physics.accumulator = 0.0f;
     g_physics.alpha = 0.0f;
     g_physics.prev_pos = g_player.pos;
@@ -951,7 +951,7 @@ static void reset_player_physics_runtime(bool clear_timers) {
     g_player.h = g_physics_cfg.collider_depth;
 }
 
-static void step_player_physics(const PlayerPhysicsInput& input, float frame_dt) {
+void step_player_physics(const PlayerPhysicsInput& input, float frame_dt) {
     if (!g_world) return;
 
     float dt = std::clamp(frame_dt, 0.0001f, 0.1f);
