@@ -22,6 +22,8 @@
 #include "ui_hud.h"              // render_hud (ui_hud extraction stage)
 #include "ui_menu.h"             // render_menus/update_menu_input (ui_menu extraction stage)
 #include "building_interaction.h" // render_build_menu/update_build_menu_input/update_mining_and_placement (building_interaction extraction stage)
+#include "input.h"                // key_down/key_pressed (input extraction stage)
+#include "win32_platform.h"       // WindowProc/WinMain (win32_platform extraction stage - see there for why it declares nothing)
 
 // ===========================
 // TerraFormer 2D (prototype)
@@ -646,32 +648,9 @@ void add_alert(const std::string& msg, float r, float g, float b, float duration
 // (which moved to the same file), so it stays static inside items_particles.cpp.
 
 // ============= OpenGL Setup =============
-static HGLRC setup_opengl(HDC hdc) {
-    PIXELFORMATDESCRIPTOR pfd = {0};
-    pfd.nSize = sizeof(pfd);
-    pfd.nVersion = 1;
-    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-    pfd.iPixelType = PFD_TYPE_RGBA;
-    pfd.cColorBits = 32;
-    pfd.cDepthBits = 24;
-    pfd.iLayerType = PFD_MAIN_PLANE;
-
-    int format = ChoosePixelFormat(hdc, &pfd);
-    SetPixelFormat(hdc, format, &pfd);
-
-    HGLRC hrc = wglCreateContext(hdc);
-    wglMakeCurrent(hdc, hrc);
-
-    glDisable(GL_DEPTH_TEST);
-    glClearColor(0.05f, 0.06f, 0.08f, 1.0f);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    // Atlas pixel-art (Minicraft/Minecraft-like)
-    init_texture_atlas();
-    glBindTexture(GL_TEXTURE_2D, 0);
-    return hrc;
-}
+// setup_opengl() moved to win32_platform.h/.cpp (verbatim, stays static there) - the
+// win32_platform extraction stage. It is only ever called from WinMain (also moved there),
+// so it needed no declaration anywhere else.
 
 // render_quad/render_quad_tex/render_bar/render_circle/render_ellipse/render_rounded_rect
 // (2D primitives) and render_player_topdown/render_astronaut (top-down player rendering,
@@ -946,7 +925,10 @@ static void render_physics_debug_3d() {
 }
 
 // ============= Rendering =============
-static void render_world(HDC hdc, int win_w, int win_h) {
+// render_world() loses "static" here for the same reason update_game() does just below in
+// this file: win32_platform.cpp's WinMain() (the win32_platform extraction stage) calls it
+// from another translation unit now, via its own forward declaration.
+void render_world(HDC hdc, int win_w, int win_h) {
     if (!g_world) return;
 
     // === SETUP 3D ===
@@ -1780,23 +1762,20 @@ static void render_world(HDC hdc, int win_w, int win_h) {
 }
 
 // ============= Input State =============
-// key_down() lost "static" here: building_interaction.cpp's update_build_menu_input()/
-// update_mining_and_placement() (the building_interaction extraction stage) call it from
-// another translation unit now - same pattern as every other "lost static" function in
-// this codebase's extraction stages.
-bool key_down(int vk) {
-    return (GetAsyncKeyState(vk) & 0x8000) != 0;
-}
-
-static bool key_pressed(int vk, bool& prev) {
-    bool cur = key_down(vk);
-    bool pressed = cur && !prev;
-    prev = cur;
-    return pressed;
-}
+// key_down()/key_pressed() moved to input.h/.cpp (verbatim) - the input extraction stage.
+// input.h (included at the top of this file) supplies both declarations; update_game()
+// below still calls key_pressed() exactly as before, for every g_prev_<key> debounce
+// global, all of which stay right here (they are this function's own hotkey-polling state,
+// not part of the input module - see input.h for the full reasoning).
 
 // ============= Update =============
-static void update_game(float dt, HWND hwnd) {
+// update_game() loses "static" here: win32_platform.cpp's WinMain() (the win32_platform
+// extraction stage, the last of this whole refactor) calls it from another translation
+// unit now, via its own forward declaration (no header owns render_world()/update_game()
+// themselves, since they are the two intentional final orchestrators left in this file,
+// not a reusable module) - same pattern as every other "lost static" function in this
+// codebase's extraction stages.
+void update_game(float dt, HWND hwnd) {
     if (!g_world) return;
 
     // Toast timer
@@ -2181,205 +2160,10 @@ static void update_game(float dt, HWND hwnd) {
     update_mining_and_placement(dt, hwnd);
 }
 
-// ============= Window Procedure =============
-// Variaveis para controle de camera com mouse
-static int g_last_mouse_x = 0;
-static int g_last_mouse_y = 0;
-static bool g_mouse_captured = false;
-
-static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-        case WM_CLOSE:
-        case WM_DESTROY:
-            g_quit = true;
-            PostQuitMessage(0);
-            return 0;
-        case WM_SIZE:
-            return 0;
-        case WM_KEYDOWN:
-            if (wParam == VK_ESCAPE && g_state == GameState::Menu) {
-                g_quit = true;
-            }
-            return 0;
-        case WM_MOUSEWHEEL: {
-            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            
-            // Se mapa grande esta aberto, controlar zoom do mapa
-            if (g_minimap.world_map_open) {
-                float zoom_delta = (float)delta * 0.001f;
-                g_minimap.world_zoom += zoom_delta;
-                g_minimap.world_zoom = std::clamp(g_minimap.world_zoom, 
-                    g_map_cfg.world_map_zoom_min, g_map_cfg.world_map_zoom_max);
-            } else {
-                // Zoom da camera com scroll do mouse
-                g_camera.distance -= (float)delta * 0.005f;
-                g_camera.distance = std::clamp(g_camera.distance, g_camera.min_distance, g_camera.max_distance);
-            }
-            return 0;
-        }
-        case WM_MBUTTONDOWN:
-            // Capturar mouse ao clicar com botao do meio para rotacionar camera
-            g_mouse_captured = true;
-            SetCapture(hwnd);
-            ShowCursor(FALSE);
-            return 0;
-        case WM_MBUTTONUP:
-            // Liberar mouse
-            g_mouse_captured = false;
-            ReleaseCapture();
-            ShowCursor(TRUE);
-            return 0;
-        case WM_RBUTTONDOWN:
-            // Clique direito do mouse - usado para construir (processado no update)
-            g_mouse_x = LOWORD(lParam);
-            g_mouse_y = HIWORD(lParam);
-            return 0;
-        case WM_LBUTTONDOWN:
-            // Clique esquerdo do mouse - usado para selecionar/minerar
-            g_mouse_left_clicked = true;
-            g_mouse_x = LOWORD(lParam);
-            g_mouse_y = HIWORD(lParam);
-            return 0;
-        case WM_MOUSEMOVE:
-            // Sempre atualiza posicao do mouse
-            g_mouse_x = LOWORD(lParam);
-            g_mouse_y = HIWORD(lParam);
-            
-            if (g_mouse_captured && g_state == GameState::Playing) {
-                int mx = LOWORD(lParam);
-                int my = HIWORD(lParam);
-                
-                int delta_x = mx - g_last_mouse_x;
-                int delta_y = my - g_last_mouse_y;
-                
-                // Rotacionar camera (mouse direita = camera gira direita)
-                g_camera.yaw += delta_x * g_camera.sensitivity;
-                g_camera.pitch -= delta_y * g_camera.sensitivity * 0.5f;
-                
-                // Clamp pitch
-                g_camera.pitch = std::clamp(g_camera.pitch, g_camera.min_pitch, g_camera.max_pitch);
-                
-                // Normalizar yaw
-                while (g_camera.yaw >= 360.0f) g_camera.yaw -= 360.0f;
-                while (g_camera.yaw < 0.0f) g_camera.yaw += 360.0f;
-                
-                // Recentrar o mouse
-                RECT rc;
-                GetClientRect(hwnd, &rc);
-                POINT center = { (rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2 };
-                ClientToScreen(hwnd, &center);
-                SetCursorPos(center.x, center.y);
-                
-                ScreenToClient(hwnd, &center);
-                g_last_mouse_x = center.x;
-                g_last_mouse_y = center.y;
-            } else {
-                g_last_mouse_x = LOWORD(lParam);
-                g_last_mouse_y = HIWORD(lParam);
-            }
-            return 0;
-    }
-    return DefWindowProcA(hwnd, msg, wParam, lParam);
-}
-
-// ============= WinMain =============
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
-    // Register window class
-    WNDCLASSA wc = {};
-    wc.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = WindowProc;
-    wc.hInstance = hInstance;
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.lpszClassName = "TerraFormer2DClass";
-
-    if (!RegisterClassA(&wc)) {
-        MessageBoxA(nullptr, "Failed to register window class", "Error", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
-    // Create window
-    int win_w = 1280;
-    int win_h = 720;
-    RECT wr = {0, 0, win_w, win_h};
-    AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
-
-    HWND hwnd = CreateWindowA(
-        "TerraFormer2DClass",
-        "TerraFormer 2D",
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        wr.right - wr.left, wr.bottom - wr.top,
-        nullptr, nullptr, hInstance, nullptr);
-
-    if (!hwnd) {
-        MessageBoxA(nullptr, "Failed to create window", "Error", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
-    HDC hdc = GetDC(hwnd);
-    HGLRC hrc = setup_opengl(hdc);
-    init_font(hdc);
-
-    ShowWindow(hwnd, nCmdShow);
-    UpdateWindow(hwnd);
-
-    reload_physics_config(true);
-    reload_terrain_config(true);
-    reload_sky_config(true);
-    reload_camera_config(true);
-    reload_mining_config(true);
-    reload_player_visual_config(true);
-
-    // Initialize world for menu background
-    g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, 1337);
-    spawn_player_new_game(*g_world);
-    g_cam_pos = g_player.pos;
-    g_state = GameState::Menu;
-
-    // Timing
-    LARGE_INTEGER freq, last_time, cur_time;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&last_time);
-
-    // Main loop
-    MSG msg;
-    while (!g_quit) {
-        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) {
-                g_quit = true;
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessageA(&msg);
-        }
-        if (g_quit) break;
-
-        // Calculate delta time
-        QueryPerformanceCounter(&cur_time);
-        float dt = (float)(cur_time.QuadPart - last_time.QuadPart) / (float)freq.QuadPart;
-        last_time = cur_time;
-        dt = std::clamp(dt, 0.0001f, 0.1f); // Clamp to avoid huge jumps
-
-        // Update
-        update_game(dt, hwnd);
-
-        // Render
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        render_world(hdc, rc.right - rc.left, rc.bottom - rc.top);
-
-        // Small sleep to avoid 100% CPU
-        Sleep(1);
-    }
-
-    // Cleanup
-    delete g_world;
-    g_world = nullptr;
-
-    wglMakeCurrent(nullptr, nullptr);
-    wglDeleteContext(hrc);
-    ReleaseDC(hwnd, hdc);
-    DestroyWindow(hwnd);
-
-    return 0;
-}
+// ============= Window Procedure / WinMain =============
+// g_last_mouse_x/g_last_mouse_y/g_mouse_captured, setup_opengl(), WindowProc(), and
+// WinMain() all moved to win32_platform.h/.cpp (verbatim) - the win32_platform extraction
+// stage, the LAST stage of this whole refactor. win32_platform.h (included at the top of
+// this file) declares nothing (see there for why); WinMain calls render_world()/
+// update_game() above via its own forward declarations instead. This is the end of
+// main.cpp: nothing follows WinMain() in win32_platform.cpp either.

@@ -73,6 +73,12 @@ extern float g_temperature;
 extern float g_terraform;
 extern UnlockProgress g_unlocks;
 extern MiniMapRuntime g_minimap;
+// g_physics_cfg: found missing during this refactor's final sanity sweep (Fase 1 closeout) -
+// render_hud()'s F3 debug line reads g_physics_cfg.fixed_timestep but this file had no
+// extern declaration for it (a gap from the original ui_hud extraction stage, pre-dating the
+// input/win32_platform stage). Same pattern as the other extern declarations above:
+// PhysicsConfig is owned (non-static) by main.cpp.
+extern PhysicsConfig g_physics_cfg;
 
 // kBaseEnergyMax/kBaseWaterMax/kBaseOxygenMax/kBaseFoodMax/kBaseIntegrityMax are
 // compile-time literals (not mutable state) defined in main.cpp; kept here as this file's
