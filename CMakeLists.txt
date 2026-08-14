@@ -23,6 +23,8 @@ add_executable(terraformer WIN32
   src/minimap.cpp
   src/render_primitives.cpp
   src/render_player.cpp
+  src/lighting.cpp
+  src/sky.cpp
 )
 
 if(MSVC)
