@@ -21,6 +21,8 @@ add_executable(terraformer WIN32
   src/font.cpp
   src/save_load.cpp
   src/minimap.cpp
+  src/render_primitives.cpp
+  src/render_player.cpp
 )
 
 if(MSVC)

@@ -15,6 +15,8 @@
 #include "font.h"                // init_font/draw_text/estimate_text_w_px (font extraction stage)
 #include "save_load.h"           // save_game/load_game (save_load extraction stage)
 #include "minimap.h"             // fog of war, waypoints, minimap/world map render (minimap extraction stage)
+#include "render_primitives.h"   // render_quad/render_cube_3d/render_wall_3d_tex/etc. (render_primitives extraction stage)
+#include "render_player.h"       // render_player_topdown/render_astronaut (render_player extraction stage)
 
 // ===========================
 // TerraFormer 2D (prototype)
@@ -209,11 +211,10 @@ static std::string g_map_config_path = "map_config.json";
 // surface_block_at/object_block_at/surface_height_at/get_block_height forward
 // declarations removed: they moved to world.h (real, non-static declarations there now)
 // as part of the world/terrain extraction.
-// render_quad lost "static" here: minimap.cpp (extracted from this file) needs external
-// linkage to call it from another translation unit - same pattern as g_world/g_camera in
-// earlier extraction stages. Its real definition stays in this file (render_primitives.h/
-// .cpp is a separate future extraction stage).
-void render_quad(float x, float y, float w, float h, float r, float g, float b, float a);
+// render_quad forward declaration removed: it now comes from render_primitives.h (included
+// at the top of this file), whose real (non-forward) declaration supplies it - render_quad's
+// definition moved out to render_primitives.cpp as part of the render_primitives/render_player
+// extraction stage.
 // draw_text forward declaration removed: it now comes from font.h (included at the top of
 // this file), which is already visible here.
 // set_toast forward declaration removed: it now comes from game_state.h (included at
@@ -694,230 +695,13 @@ static HGLRC setup_opengl(HDC hdc) {
     return hrc;
 }
 
-// ============= Rendering Helpers =============
-void render_quad(float x, float y, float w, float h, float r, float g, float b, float a = 1.0f) {
-    glColor4f(r, g, b, a);
-    glBegin(GL_QUADS);
-    glVertex2f(x, y);
-    glVertex2f(x + w, y);
-    glVertex2f(x + w, y + h);
-    glVertex2f(x, y + h);
-    glEnd();
-}
-
-// Quad 2D texturizado (tile do atlas). Requer GL_TEXTURE_2D habilitado e g_tex_atlas bindado.
-static void render_quad_tex(float x, float y, float w, float h, Tile tile, float tint_r, float tint_g, float tint_b, float a = 1.0f) {
-    UvRect uv = atlas_uv(tile);
-    glColor4f(tint_r, tint_g, tint_b, a);
-    glBegin(GL_QUADS);
-    glTexCoord2f(uv.u0, uv.v1); glVertex2f(x, y);
-    glTexCoord2f(uv.u1, uv.v1); glVertex2f(x + w, y);
-    glTexCoord2f(uv.u1, uv.v0); glVertex2f(x + w, y + h);
-    glTexCoord2f(uv.u0, uv.v0); glVertex2f(x, y + h);
-    glEnd();
-}
-
-static void render_bar(float x, float y, float w, float h, float pct, float r, float g, float b) {
-    render_quad(x, y, w, h, 0.0f, 0.0f, 0.0f, 0.55f);
-    render_quad(x + 2.0f, y + 2.0f, (w - 4.0f) * clamp01(pct), h - 4.0f, r, g, b, 0.92f);
-}
-
-// ============= Astronaut Rendering =============
-static void render_circle(float cx, float cy, float radius, float r, float g, float b, float a, int segments = 16) {
-    glColor4f(r, g, b, a);
-    glBegin(GL_TRIANGLE_FAN);
-    glVertex2f(cx, cy);
-    for (int i = 0; i <= segments; ++i) {
-        float angle = (float)i / (float)segments * 2.0f * kPi;
-        glVertex2f(cx + std::cos(angle) * radius, cy + std::sin(angle) * radius);
-    }
-    glEnd();
-}
-
-static void render_ellipse(float cx, float cy, float rx, float ry, float r, float g, float b, float a, int segments = 16) {
-    glColor4f(r, g, b, a);
-    glBegin(GL_TRIANGLE_FAN);
-    glVertex2f(cx, cy);
-    for (int i = 0; i <= segments; ++i) {
-        float angle = (float)i / (float)segments * 2.0f * kPi;
-        glVertex2f(cx + std::cos(angle) * rx, cy + std::sin(angle) * ry);
-    }
-    glEnd();
-}
-
-static void render_rounded_rect(float x, float y, float w, float h, float radius, float r, float g, float b, float a) {
-    // Simple rounded rectangle approximation
-    render_quad(x + radius, y, w - 2*radius, h, r, g, b, a);
-    render_quad(x, y + radius, w, h - 2*radius, r, g, b, a);
-    render_circle(x + radius, y + radius, radius, r, g, b, a, 8);
-    render_circle(x + w - radius, y + radius, radius, r, g, b, a, 8);
-    render_circle(x + radius, y + h - radius, radius, r, g, b, a, 8);
-    render_circle(x + w - radius, y + h - radius, radius, r, g, b, a, 8);
-}
-
-// ============= TOP-DOWN PLAYER RENDERING =============
-// Astronauta visto de cima com 4 direcoes
-static void render_player_topdown(float px, float py, float scale, const Player& player) {
-    // Cores do traje - MAIS CONTRASTANTES
-    const float suit_r = 1.0f, suit_g = 0.95f, suit_b = 0.90f;    // Traje branco brilhante
-    const float visor_r = 0.10f, visor_g = 0.50f, visor_b = 0.90f; // Visor azul vivo
-    const float pack_r = 0.35f, pack_g = 0.38f, pack_b = 0.42f;    // Mochila cinza escuro
-    const float gold_r = 1.0f, gold_g = 0.70f, gold_b = 0.15f;     // Detalhes dourados vivos
-    const float boot_r = 0.20f, boot_g = 0.22f, boot_b = 0.25f;    // Botas escuras
-    const float outline_r = 0.0f, outline_g = 0.0f, outline_b = 0.0f; // Outline preto
-    
-    // TAMANHO AUMENTADO: era 14, agora 24
-    float size = 24.0f * scale;
-    float outline_w = 2.0f * scale; // Largura do outline
-    
-    // Animacao de caminhada
-    float walk_offset = 0.0f;
-    float leg_anim = 0.0f;
-    if (player.is_moving) {
-        walk_offset = std::sin(player.walk_timer * 10.0f) * 1.5f * scale;
-        leg_anim = std::sin(player.walk_timer * 12.0f) * 4.0f * scale;
-    }
-    
-    // Offset de direcao para elementos (mochila, visor)
-    float dir_x = 0.0f, dir_y = 0.0f;
-    switch (player.facing_dir) {
-        case 0: dir_y = -1.0f; break;  // Norte
-        case 1: dir_x = 1.0f;  break;  // Leste
-        case 2: dir_y = 1.0f;  break;  // Sul
-        case 3: dir_x = -1.0f; break;  // Oeste
-    }
-    
-    float center_x = px;
-    float center_y = py;
-    
-    // === SOMBRA GRANDE E VISIVEL ===
-    render_ellipse(center_x + 3.0f * scale, center_y + 6.0f * scale, 
-                   size * 0.55f, size * 0.30f, 0.0f, 0.0f, 0.0f, 0.5f);
-    
-    // === MOCHILA (atras do jogador) ===
-    float pack_offset = 7.0f * scale;
-    float pack_x = center_x - dir_x * pack_offset;
-    float pack_y = center_y - dir_y * pack_offset;
-    
-    // Outline da mochila
-    render_circle(pack_x, pack_y, size * 0.32f + outline_w, outline_r, outline_g, outline_b, 1.0f);
-    // Mochila
-    render_circle(pack_x, pack_y, size * 0.32f, pack_r, pack_g, pack_b, 1.0f);
-    // Tanques de oxigenio na mochila
-    render_ellipse(pack_x - 3.0f * scale, pack_y, 2.5f * scale, 4.0f * scale, 0.50f, 0.55f, 0.60f, 1.0f);
-    render_ellipse(pack_x + 3.0f * scale, pack_y, 2.5f * scale, 4.0f * scale, 0.50f, 0.55f, 0.60f, 1.0f);
-    
-    // === PERNAS (animadas) ===
-    float leg_offset = 5.0f * scale;
-    float leg_size = 4.0f * scale;
-    
-    // Perna esquerda
-    float left_leg_x = center_x;
-    float left_leg_y = center_y;
-    if (player.facing_dir == 0 || player.facing_dir == 2) {
-        left_leg_x -= leg_offset;
-        left_leg_y += (player.facing_dir == 0 ? 1 : -1) * leg_anim * 0.3f;
-    } else {
-        left_leg_y -= leg_offset;
-        left_leg_x += (player.facing_dir == 1 ? -1 : 1) * leg_anim * 0.3f;
-    }
-    // Outline perna esquerda
-    render_circle(left_leg_x, left_leg_y, leg_size + outline_w, outline_r, outline_g, outline_b, 1.0f);
-    render_circle(left_leg_x, left_leg_y, leg_size, boot_r, boot_g, boot_b, 1.0f);
-    
-    // Perna direita
-    float right_leg_x = center_x;
-    float right_leg_y = center_y;
-    if (player.facing_dir == 0 || player.facing_dir == 2) {
-        right_leg_x += leg_offset;
-        right_leg_y -= (player.facing_dir == 0 ? 1 : -1) * leg_anim * 0.3f;
-    } else {
-        right_leg_y += leg_offset;
-        right_leg_x -= (player.facing_dir == 1 ? -1 : 1) * leg_anim * 0.3f;
-    }
-    // Outline perna direita
-    render_circle(right_leg_x, right_leg_y, leg_size + outline_w, outline_r, outline_g, outline_b, 1.0f);
-    render_circle(right_leg_x, right_leg_y, leg_size, boot_r, boot_g, boot_b, 1.0f);
-    
-    // === CORPO (circulo principal) ===
-    // Outline do corpo
-    render_circle(center_x, center_y + walk_offset, size * 0.5f + outline_w, outline_r, outline_g, outline_b, 1.0f);
-    render_circle(center_x, center_y + walk_offset, size * 0.5f, suit_r, suit_g, suit_b, 1.0f);
-    
-    // Detalhe do traje (faixa dourada)
-    if (player.facing_dir == 0 || player.facing_dir == 2) {
-        render_quad(center_x - size * 0.4f, center_y + walk_offset - 1.5f * scale, 
-                   size * 0.8f, 3.0f * scale, gold_r, gold_g * 0.8f, 0.2f, 0.9f);
-    } else {
-        render_quad(center_x - 1.5f * scale, center_y + walk_offset - size * 0.4f, 
-                   3.0f * scale, size * 0.8f, gold_r, gold_g * 0.8f, 0.2f, 0.9f);
-    }
-    
-    // === CAPACETE (cabeca) ===
-    float head_offset = size * 0.18f;
-    float head_x = center_x + dir_x * head_offset;
-    float head_y = center_y + walk_offset + dir_y * head_offset;
-    
-    // Outline do capacete
-    render_circle(head_x, head_y, size * 0.40f + outline_w, outline_r, outline_g, outline_b, 1.0f);
-    // Capacete branco
-    render_circle(head_x, head_y, size * 0.40f, suit_r, suit_g, suit_b, 1.0f);
-    
-    // Borda dourada do capacete
-    render_circle(head_x, head_y, size * 0.42f, gold_r, gold_g, gold_b, 0.4f);
-    
-    // === VISOR (indica direcao) ===
-    float visor_dist = size * 0.25f;
-    float visor_x = head_x + dir_x * visor_dist;
-    float visor_y = head_y + dir_y * visor_dist;
-    
-    // Outline do visor
-    render_circle(visor_x, visor_y, size * 0.20f + outline_w * 0.5f, outline_r, outline_g, outline_b, 1.0f);
-    // Visor azul reflexivo
-    render_circle(visor_x, visor_y, size * 0.20f, visor_r, visor_g, visor_b, 1.0f);
-    
-    // Reflexo no visor
-    float ref_intensity = 0.5f + 0.2f * std::sin(player.anim_frame * 0.8f);
-    render_circle(visor_x - 2.0f * scale * (1.0f - std::fabs(dir_x)), 
-                 visor_y - 2.0f * scale * (1.0f - std::fabs(dir_y)), 
-                 size * 0.08f, 1.0f, 1.0f, 1.0f, ref_intensity);
-    
-    // === ANTENA ===
-    float antenna_x = head_x - dir_x * size * 0.28f + (dir_y != 0 ? 4.0f * scale : 0);
-    float antenna_y = head_y - dir_y * size * 0.28f + (dir_x != 0 ? -4.0f * scale : 0);
-    render_circle(antenna_x, antenna_y, 2.5f * scale, 0.3f, 0.32f, 0.35f, 1.0f);
-    // Luz da antena (pisca)
-    float blink = (std::sin(player.anim_frame * 4.0f) > 0.0f) ? 1.0f : 0.3f;
-    render_circle(antenna_x, antenna_y, 1.5f * scale, 1.0f * blink, 0.2f * blink, 0.2f * blink, 1.0f);
-    
-    // === FERRAMENTA (quando minerando) ===
-    if (player.is_mining) {
-        float tool_dist = size * 0.7f;
-        float tool_x = center_x + dir_x * tool_dist;
-        float tool_y = center_y + dir_y * tool_dist;
-        float mine_swing = std::sin(player.mine_anim * 15.0f) * 4.0f * scale;
-        
-        // Picareta - outline
-        render_quad(tool_x - 2.0f * scale, tool_y - 2.0f * scale + mine_swing, 
-                   4.0f * scale, 12.0f * scale, 0.0f, 0.0f, 0.0f, 1.0f);
-        render_quad(tool_x - 1.5f * scale, tool_y - 1.5f * scale + mine_swing, 
-                   3.0f * scale, 10.0f * scale, 0.55f, 0.35f, 0.2f, 1.0f);
-        render_quad(tool_x - 5.0f * scale, tool_y - 3.0f * scale + mine_swing, 
-                   10.0f * scale, 3.0f * scale, 0.5f, 0.5f, 0.55f, 1.0f);
-    }
-    
-    // === LUZ DE STATUS ===
-    float status_x = center_x + (dir_x == 0 ? 5.0f * scale : 0);
-    float status_y = center_y + walk_offset + (dir_y == 0 ? -5.0f * scale : 0);
-    float status_blink = (std::sin(player.anim_frame * 3.0f) > 0.0f) ? 1.0f : 0.5f;
-    render_circle(status_x, status_y, 2.0f * scale, 0.2f * status_blink, 1.0f * status_blink, 0.3f * status_blink, 1.0f);
-}
-
-// Wrapper para compatibilidade (ignora in_water em top-down)
-static void render_astronaut(float px, float py, float scale, const Player& player, bool /*in_water*/) {
-    render_player_topdown(px, py, scale, player);
-}
-
+// render_quad/render_quad_tex/render_bar/render_circle/render_ellipse/render_rounded_rect
+// (2D primitives) and render_player_topdown/render_astronaut (top-down player rendering,
+// interleaved with the primitives right here in the original file) moved out as part of the
+// render_primitives/render_player extraction stage: the first group to render_primitives.h/
+// .cpp (included at the top of this file), the player pair to render_player.h/.cpp (also
+// included at the top - it depends on both Player from player_physics.h and on
+// render_primitives' render_circle/render_ellipse/render_quad).
 // try_spawn_tree/terraform_step/recompute_terraform_score/update_phase/melt_ice_around
 // moved to world.cpp (declarations now in world.h).
 
@@ -935,102 +719,9 @@ static void render_astronaut(float px, float py, float scale, const Player& play
 
 // ============= Renderizacao 3D (Estilo Minicraft) =============
 
-// Renderizar outline de um cubo (bordas pretas estilo pixel art)
-static void render_cube_outline_3d(float x, float y, float z, float size, float line_width = 1.5f) {
-    float half = size * 0.5f;
-    
-    glLineWidth(line_width);
-    glColor4f(0.0f, 0.0f, 0.0f, 0.8f);
-    
-    // Arestas superiores
-    glBegin(GL_LINE_LOOP);
-    glVertex3f(x - half, y + half, z - half);
-    glVertex3f(x + half, y + half, z - half);
-    glVertex3f(x + half, y + half, z + half);
-    glVertex3f(x - half, y + half, z + half);
-    glEnd();
-    
-    // Arestas inferiores
-    glBegin(GL_LINE_LOOP);
-    glVertex3f(x - half, y - half, z - half);
-    glVertex3f(x + half, y - half, z - half);
-    glVertex3f(x + half, y - half, z + half);
-    glVertex3f(x - half, y - half, z + half);
-    glEnd();
-    
-    // Arestas verticais
-    glBegin(GL_LINES);
-    glVertex3f(x - half, y - half, z - half);
-    glVertex3f(x - half, y + half, z - half);
-    glVertex3f(x + half, y - half, z - half);
-    glVertex3f(x + half, y + half, z - half);
-    glVertex3f(x + half, y - half, z + half);
-    glVertex3f(x + half, y + half, z + half);
-    glVertex3f(x - half, y - half, z + half);
-    glVertex3f(x - half, y + half, z + half);
-    glEnd();
-}
-
-// Renderizar um cubo no espaco 3D com iluminacao simples (Minicraft style)
-static void render_cube_3d(float x, float y, float z, float size, float r, float g, float b, float a = 1.0f, bool outline = false) {
-    float half = size * 0.5f;
-    
-    // Cores com sombreamento por face (iluminacao fake - Minicraft tem 3 niveis)
-    float top_shade = 1.0f;      // Face superior - clara
-    float side_shade = 0.70f;    // Faces laterais - media
-    float dark_shade = 0.50f;    // Faces escuras
-    
-    glBegin(GL_QUADS);
-    
-    // Face superior (Y+) - mais clara
-    glColor4f(r * top_shade, g * top_shade, b * top_shade, a);
-    glVertex3f(x - half, y + half, z - half);
-    glVertex3f(x + half, y + half, z - half);
-    glVertex3f(x + half, y + half, z + half);
-    glVertex3f(x - half, y + half, z + half);
-    
-    // Face inferior (Y-) - escura (normalmente nao visivel)
-    glColor4f(r * dark_shade, g * dark_shade, b * dark_shade, a);
-    glVertex3f(x - half, y - half, z + half);
-    glVertex3f(x + half, y - half, z + half);
-    glVertex3f(x + half, y - half, z - half);
-    glVertex3f(x - half, y - half, z - half);
-    
-    // Face frontal (Z+) - media
-    glColor4f(r * side_shade, g * side_shade, b * side_shade, a);
-    glVertex3f(x - half, y - half, z + half);
-    glVertex3f(x + half, y - half, z + half);
-    glVertex3f(x + half, y + half, z + half);
-    glVertex3f(x - half, y + half, z + half);
-    
-    // Face traseira (Z-) - escura
-    glColor4f(r * dark_shade, g * dark_shade, b * dark_shade, a);
-    glVertex3f(x + half, y - half, z - half);
-    glVertex3f(x - half, y - half, z - half);
-    glVertex3f(x - half, y + half, z - half);
-    glVertex3f(x + half, y + half, z - half);
-    
-    // Face direita (X+) - media
-    glColor4f(r * side_shade, g * side_shade, b * side_shade, a);
-    glVertex3f(x + half, y - half, z + half);
-    glVertex3f(x + half, y - half, z - half);
-    glVertex3f(x + half, y + half, z - half);
-    glVertex3f(x + half, y + half, z + half);
-    
-    // Face esquerda (X-) - escura
-    glColor4f(r * dark_shade, g * dark_shade, b * dark_shade, a);
-    glVertex3f(x - half, y - half, z - half);
-    glVertex3f(x - half, y - half, z + half);
-    glVertex3f(x - half, y + half, z + half);
-    glVertex3f(x - half, y + half, z - half);
-    
-    glEnd();
-    
-    // Desenhar outline se solicitado (estilo pixel art)
-    if (outline) {
-        render_cube_outline_3d(x, y, z, size, 1.0f);
-    }
-}
+// render_cube_outline_3d/render_cube_3d moved to render_primitives.h/.cpp (render_primitives
+// extraction stage) - render_cube_3d_tex below stays here for now (not part of that stage's
+// list) and keeps calling render_cube_outline_3d via render_primitives.h's declaration.
 
 // Renderizar cubo 3D texturizado (tile do atlas) com iluminacao fake por face.
 // Requer GL_TEXTURE_2D habilitado e g_tex_atlas bindado.
@@ -2088,103 +1779,12 @@ static void render_plane_3d_tex(float x, float y, float z, float size, Tile tile
     glEnd();
 }
 
-// Renderizar parede vertical texturizada (para laterais do terreno em altura).
-// Requer GL_TEXTURE_2D habilitado.
-static void render_wall_3d_tex_xpos(float x, float z, float y0, float y1, Tile tile,
-                                   float tint_r, float tint_g, float tint_b, float a, float shade) {
-    if (y1 <= y0) return;
-    constexpr float half = 0.5f;
-    UvRect uv = atlas_uv(tile);
-    float xf = x + half;
-    float z0 = z - half;
-    float z1 = z + half;
-    glColor4f(tint_r * shade, tint_g * shade, tint_b * shade, a);
-    glBegin(GL_QUADS);
-    glTexCoord2f(uv.u0, uv.v0); glVertex3f(xf, y0, z0);
-    glTexCoord2f(uv.u1, uv.v0); glVertex3f(xf, y0, z1);
-    glTexCoord2f(uv.u1, uv.v1); glVertex3f(xf, y1, z1);
-    glTexCoord2f(uv.u0, uv.v1); glVertex3f(xf, y1, z0);
-    glEnd();
-}
-
-static void render_wall_3d_tex_xneg(float x, float z, float y0, float y1, Tile tile,
-                                   float tint_r, float tint_g, float tint_b, float a, float shade) {
-    if (y1 <= y0) return;
-    constexpr float half = 0.5f;
-    UvRect uv = atlas_uv(tile);
-    float xf = x - half;
-    float z0 = z - half;
-    float z1 = z + half;
-    glColor4f(tint_r * shade, tint_g * shade, tint_b * shade, a);
-    glBegin(GL_QUADS);
-    glTexCoord2f(uv.u0, uv.v0); glVertex3f(xf, y0, z1);
-    glTexCoord2f(uv.u1, uv.v0); glVertex3f(xf, y0, z0);
-    glTexCoord2f(uv.u1, uv.v1); glVertex3f(xf, y1, z0);
-    glTexCoord2f(uv.u0, uv.v1); glVertex3f(xf, y1, z1);
-    glEnd();
-}
-
-static void render_wall_3d_tex_zpos(float x, float z, float y0, float y1, Tile tile,
-                                   float tint_r, float tint_g, float tint_b, float a, float shade) {
-    if (y1 <= y0) return;
-    constexpr float half = 0.5f;
-    UvRect uv = atlas_uv(tile);
-    float zf = z + half;
-    float x0 = x - half;
-    float x1 = x + half;
-    glColor4f(tint_r * shade, tint_g * shade, tint_b * shade, a);
-    glBegin(GL_QUADS);
-    glTexCoord2f(uv.u0, uv.v0); glVertex3f(x0, y0, zf);
-    glTexCoord2f(uv.u1, uv.v0); glVertex3f(x1, y0, zf);
-    glTexCoord2f(uv.u1, uv.v1); glVertex3f(x1, y1, zf);
-    glTexCoord2f(uv.u0, uv.v1); glVertex3f(x0, y1, zf);
-    glEnd();
-}
-
-static void render_wall_3d_tex_zneg(float x, float z, float y0, float y1, Tile tile,
-                                   float tint_r, float tint_g, float tint_b, float a, float shade) {
-    if (y1 <= y0) return;
-    constexpr float half = 0.5f;
-    UvRect uv = atlas_uv(tile);
-    float zf = z - half;
-    float x0 = x - half;
-    float x1 = x + half;
-    glColor4f(tint_r * shade, tint_g * shade, tint_b * shade, a);
-    glBegin(GL_QUADS);
-    glTexCoord2f(uv.u0, uv.v0); glVertex3f(x1, y0, zf);
-    glTexCoord2f(uv.u1, uv.v0); glVertex3f(x0, y0, zf);
-    glTexCoord2f(uv.u1, uv.v1); glVertex3f(x0, y1, zf);
-    glTexCoord2f(uv.u0, uv.v1); glVertex3f(x1, y1, zf);
-    glEnd();
-}
-
-// Renderizar esfera 3D simples (para player)
-static void render_sphere_3d(float cx, float cy, float cz, float radius, float r, float g, float b, float a = 1.0f, int segments = 12) {
-    // Aproximacao com faixas horizontais
-    for (int i = 0; i < segments; ++i) {
-        float lat0 = kPi * (-0.5f + (float)i / segments);
-        float lat1 = kPi * (-0.5f + (float)(i + 1) / segments);
-        float y0 = std::sin(lat0);
-        float y1 = std::sin(lat1);
-        float r0 = std::cos(lat0);
-        float r1 = std::cos(lat1);
-        
-        // Sombreamento baseado na altura
-        float shade = 0.6f + 0.4f * ((float)i / segments);
-        glColor4f(r * shade, g * shade, b * shade, a);
-        
-        glBegin(GL_QUAD_STRIP);
-        for (int j = 0; j <= segments; ++j) {
-            float lng = 2.0f * kPi * (float)j / segments;
-            float x = std::cos(lng);
-            float z = std::sin(lng);
-            
-            glVertex3f(cx + radius * x * r1, cy + radius * y1, cz + radius * z * r1);
-            glVertex3f(cx + radius * x * r0, cy + radius * y0, cz + radius * z * r0);
-        }
-        glEnd();
-    }
-}
+// render_wall_3d_tex_{xpos,xneg,zpos,zneg}/render_sphere_3d moved to render_primitives.h/
+// .cpp (render_primitives extraction stage). The 4 near-identical wall functions were
+// collapsed there into a single render_wall_3d_tex(WallFace face, ...) parameterized by
+// face - the 4 call sites in render_world() below were updated to the new form (this is
+// the one deliberate non-verbatim call-site change in this stage, per the refactor plan's
+// Fase 1b wall dedup).
 
 // Renderizar cilindro 3D (para corpo do player)
 static void render_cylinder_3d(float cx, float cy, float cz, float radius, float height, float r, float g, float b, float a = 1.0f, int segments = 12) {
@@ -2561,10 +2161,10 @@ static void render_world(HDC hdc, int win_w, int win_h) {
 
                     if (do_walls) {
                         if (use_textures) {
-                            if (h_e < h_here) render_wall_3d_tex_xpos(world_x, world_z, h_e, h_here, gtex.side, tint_r, tint_g, tint_b, a, side_shade);
-                            if (h_w < h_here) render_wall_3d_tex_xneg(world_x, world_z, h_w, h_here, gtex.side, tint_r, tint_g, tint_b, a, dark_shade);
-                            if (h_s < h_here) render_wall_3d_tex_zpos(world_x, world_z, h_s, h_here, gtex.side, tint_r, tint_g, tint_b, a, side_shade);
-                            if (h_n < h_here) render_wall_3d_tex_zneg(world_x, world_z, h_n, h_here, gtex.side, tint_r, tint_g, tint_b, a, dark_shade);
+                            if (h_e < h_here) render_wall_3d_tex(WallFace::XPos, world_x, world_z, h_e, h_here, gtex.side, tint_r, tint_g, tint_b, a, side_shade);
+                            if (h_w < h_here) render_wall_3d_tex(WallFace::XNeg, world_x, world_z, h_w, h_here, gtex.side, tint_r, tint_g, tint_b, a, dark_shade);
+                            if (h_s < h_here) render_wall_3d_tex(WallFace::ZPos, world_x, world_z, h_s, h_here, gtex.side, tint_r, tint_g, tint_b, a, side_shade);
+                            if (h_n < h_here) render_wall_3d_tex(WallFace::ZNeg, world_x, world_z, h_n, h_here, gtex.side, tint_r, tint_g, tint_b, a, dark_shade);
                         } else {
                             // Fallback sem texturas: quads coloridos
                             auto wall_col = [&](float s) {

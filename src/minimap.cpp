@@ -9,18 +9,12 @@
 #include "modules_building.h"    // Module, g_modules
 #include "game_state.h"          // set_toast
 #include "font.h"                // draw_text
+#include "render_primitives.h"   // render_quad (render_primitives extraction stage)
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-
-// render_quad's real definition still lives in main.cpp (render_primitives.h/.cpp is a
-// separate future extraction stage) - it lost "static" there so it can be called from this
-// other translation unit; this is a plain forward declaration, same pattern as
-// add_alert()/update_shooting_stars() in modules_building.cpp for not-yet-extracted
-// functions.
-void render_quad(float x, float y, float w, float h, float r, float g, float b, float a = 1.0f);
 
 // Globais de estado de jogo ainda definidas em main.cpp (dono continua sendo main.cpp -
 // nao fazem parte desta etapa de extracao). g_base_x/g_base_y/g_day_time ja eram
