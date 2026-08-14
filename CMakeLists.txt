@@ -18,6 +18,9 @@ add_executable(terraformer WIN32
   src/items_particles.cpp
   src/inventory_crafting.cpp
   src/modules_building.cpp
+  src/font.cpp
+  src/save_load.cpp
+  src/minimap.cpp
 )
 
 if(MSVC)
