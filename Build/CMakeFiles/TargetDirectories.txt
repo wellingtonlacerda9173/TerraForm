@@ -1,3 +1,0 @@
-C:/Projetos/TerraForm/Build/CMakeFiles/terraformer.dir
-C:/Projetos/TerraForm/Build/CMakeFiles/ALL_BUILD.dir
-C:/Projetos/TerraForm/Build/CMakeFiles/ZERO_CHECK.dir
