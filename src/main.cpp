@@ -9,6 +9,9 @@
 #include "config_io.h"
 #include "game_state.h"
 #include "player_physics.h"
+#include "items_particles.h"
+#include "inventory_crafting.h"
+#include "modules_building.h"
 
 // ===========================
 // TerraFormer 2D (prototype)
@@ -51,27 +54,16 @@ static constexpr float kBaseOxygenMax = 200.0f;
 static constexpr float kBaseFoodMax = 200.0f;
 static constexpr float kBaseIntegrityMax_Global = 100.0f;  // For reference before full declaration
 
-// Construction and alert systems (defined here for early use)
-struct ConstructionJob {
-    Block module_type = Block::Air;
-    int slot_index = -1;
-    float time_remaining = 0.0f;
-    float total_time = 0.0f;
-    bool active = false;
-};
-// Lost "static": spawn_player_new_game()/build_physics_test_map() (build_physics_test_map
-// stays in this file; spawn_player_new_game moved to player_physics.cpp) both clear this
-// queue, so it needs external linkage now.
-std::vector<ConstructionJob> g_construction_queue;
-
-// Helper for spawn_player_new_game() (moved to player_physics.cpp): ConstructionJob is
-// not extracted yet (owned by the future modules_building stage), so player_physics.cpp
-// only has a forward declaration of it and cannot call g_construction_queue.clear()
-// directly - std::vector<T>::clear() is not one of the operations the standard
-// guarantees to work with an incomplete T (only the default constructor, destructor, and
-// move special members are), so this thin wrapper (defined here, where ConstructionJob
-// is complete) is the safe way to expose it across the translation-unit boundary.
-void clear_construction_queue() { g_construction_queue.clear(); }
+// ConstructionJob struct + g_construction_queue moved to modules_building.h/.cpp
+// (verbatim) - this is the items_particles/modules_building/inventory_crafting
+// extraction stage. modules_building.h (included above) supplies the "extern
+// std::vector<ConstructionJob> g_construction_queue;" declaration this file relies on
+// (build-menu render/input, build_physics_test_map). The clear_construction_queue()
+// wrapper that used to live here is gone: it existed only because player_physics.cpp had
+// just a forward declaration of ConstructionJob (an incomplete type, for which
+// std::vector<T>::clear() is not guaranteed to work per the standard); now that
+// player_physics.cpp includes modules_building.h directly (see its own comment), it
+// calls g_construction_queue.clear() itself.
 
 // Alert struct moved to game_state.h (verbatim); g_alerts (the vector) stays here since
 // it's used throughout this file's alert system, not just by the feedback subsystem
@@ -108,10 +100,12 @@ TerraPhase g_phase = TerraPhase::Frozen;
 static constexpr float kEnergyMax = 500.0f;
 static constexpr float kTempFrozen = -20.0f;    // Below this: frozen
 static constexpr float kTempThawing = 0.0f;     // Water can be liquid
-// kTempThawing is still needed here too (update_modules()'s global ice-melt timer,
-// below, compares against it directly). world.cpp (update_phase()/melt_ice_around(),
-// extracted from this file) has its own file-local copy of the same constant rather than
-// sharing this one via extern, since it's a compile-time literal, not mutable state.
+// kTempThawing used to be needed here too (update_modules()'s global ice-melt timer used
+// to compare against it directly), but update_modules() has since moved to
+// modules_building.cpp (this stage), which keeps its own file-local copy of this same
+// literal value instead (see the comment there) - same pattern already used by
+// world.cpp (update_phase()/melt_ice_around()) below. kTempThawing itself is left here
+// unused rather than removed, to keep this stage's diff minimal and low-risk.
 // kTempHabitable/kTempTarget moved to world.cpp only (defined there, static to that TU):
 // they were exclusively used by update_phase(), which moved there too.
 
@@ -141,8 +135,10 @@ static GameSettings g_settings;
 // Base location (landing site). g_base_x/g_base_y/g_show_build_menu/g_build_menu_selection
 // lost "static": spawn_player_at_base()/spawn_player_new_game() (extracted to
 // player_physics.cpp) read/write them - same pattern as g_oxygen/g_water_res/etc. in
-// textures.cpp. Still owned by main.cpp pending the future modules_building extraction
-// stage (g_base_x/g_base_y are set by generate_base(), which stays here too).
+// textures.cpp. Still owned by main.cpp: even though generate_base()/update_modules()
+// (modules_building.cpp, this stage) and rebuild_modules_from_world() now read/write
+// g_base_x/g_base_y too (via their own extern declarations), this file's build-menu
+// render/input and HUD code remain their heaviest users, so they stay here for now.
 int g_base_x = 0;
 int g_base_y = 0;
 bool g_show_build_menu = false;
@@ -156,14 +152,11 @@ static int g_mouse_x = 0;
 static int g_mouse_y = 0;
 static bool g_mouse_left_clicked = false;  // Flag para clique esquerdo (single frame)
 
-// Build slots for the base
-struct BuildSlotInfo {
-    int x = 0;
-    int y = 0;
-    Block assigned_module = Block::Air;  // Air means empty slot
-    std::string label;
-};
-static std::vector<BuildSlotInfo> g_build_slots;
+// BuildSlotInfo struct + g_build_slots moved to modules_building.h/.cpp (verbatim) - this
+// is the items_particles/modules_building/inventory_crafting extraction stage.
+// modules_building.h (included above) supplies the "extern std::vector<BuildSlotInfo>
+// g_build_slots;" declaration this file relies on (build-menu render/input,
+// generate_base(), build_physics_test_map).
 
 // g_terrain_cfg/g_sky_cfg/g_mining_cfg/g_player_visual_cfg (and their *_config_path
 // siblings below) lost "static" here: config_io.cpp's reload_terrain_config/
@@ -179,7 +172,12 @@ SkyConfig g_sky_cfg = {};
 CameraConfig g_camera_cfg = {};
 MiningConfig g_mining_cfg = {};
 PlayerVisualConfig g_player_visual_cfg = {};
-static BaseConfig g_base_cfg = {};
+// g_base_cfg also lost "static" here (same reasoning as g_terrain_cfg etc. above):
+// modules_building.cpp's update_modules() (extracted from this file) now reads it
+// (safe_radius, recharge_*_rate, repair_player_hp_per_sec, jetpack_refuel_per_sec) from
+// another translation unit. Note this is only the instance losing "static" - the
+// BaseConfig struct definition itself (config_types.h) is untouched by this stage.
+BaseConfig g_base_cfg = {};
 static MapConfig g_map_cfg = {};
 // g_minimap lost "static": spawn_player_new_game() (extracted to player_physics.cpp)
 // resets its fog-of-war/waypoints on new game.
@@ -197,10 +195,11 @@ static std::string g_map_config_path = "map_config.json";
 // used to sit near it in this file, moved to world.cpp.
 
 // Forward declarations (gameplay/render below)
-static void rebuild_modules_from_world();
 static bool save_game(const char* path);
 static bool load_game(const char* path);
-void generate_base(World& world);
+// rebuild_modules_from_world/generate_base forward declarations removed: they moved to
+// modules_building.h (real, non-static declarations there now) as part of the
+// items_particles/modules_building/inventory_crafting extraction stage.
 // surface_block_at/object_block_at/surface_height_at/get_block_height forward
 // declarations removed: they moved to world.h (real, non-static declarations there now)
 // as part of the world/terrain extraction.
@@ -252,10 +251,13 @@ static float get_player_render_rotation() { return g_physics.render_rotation; }
 
 // update_camera_for_frame() moved to camera.cpp (camera.h supplies its declaration).
 
-// g_inventory/g_selected lost "static": spawn_player_new_game() (extracted to
-// player_physics.cpp) grants the starter kit and resets the selected block.
-std::array<int, kBlockTypeCount> g_inventory = {};
-Block g_selected = Block::Dirt;
+// g_inventory/g_selected moved to inventory_crafting.h/.cpp (this stage) - their natural
+// owner among the modules extracted so far. inventory_crafting.h (included at the top of
+// this file) supplies the "extern std::array<int, kBlockTypeCount> g_inventory;"/"extern
+// Block g_selected;" declarations this file relies on (mining, HUD, hotbar, save/load,
+// build menu); player_physics.cpp's spawn_player_new_game() (which grants the starter kit
+// and resets the selected block) now gets them from that header too, instead of its own
+// local extern declarations.
 
 static bool g_prev_lmb = false;
 static bool g_prev_rmb = false;
@@ -297,57 +299,23 @@ static int g_place_x = 0;
 static int g_place_y = 0;
 static bool g_place_in_range = false;
 
-struct Particle {
-    Vec2 pos;
-    Vec2 vel;
-    float life;
-    float r, g, b, a;
-};
-static std::vector<Particle> g_particles;
-
+// Particle/ItemDrop structs + g_particles/g_drops/g_target_drop moved to
+// items_particles.h/.cpp (verbatim) - this is the items_particles/modules_building/
+// inventory_crafting extraction stage. items_particles.h (included above) supplies the
+// extern declarations this file relies on (particle/drop rendering, raycast mining/
+// placement, clear() on respawn/new-game/load_game).
+//
+// ShootingStar's struct definition moved to items_particles.h too (it was textually
+// interleaved with Particle/ItemDrop here), but g_shooting_stars (the vector) and
+// update_shooting_stars() stay right here in main.cpp - they belong to the sky/day-night
+// system, a separate future extraction stage, not to this one.
 // Eventos do ceu: estrelas cadentes (camera-relative para parecer "longe" do mundo).
-struct ShootingStar {
-    Vec3 offset;   // relativo ao camera (x/z). y em coordenada absoluta do ceu
-    Vec3 vel;      // unidades por segundo (no espaco do offset)
-    float life = 0.0f;
-    float max_life = 0.0f;
-    float length = 0.0f;
-    float r = 1.0f, g = 1.0f, b = 1.0f;
-};
 static std::vector<ShootingStar> g_shooting_stars;
 
-// Drops coletaveis (estilo Minicraft/Minecraft)
-struct ItemDrop {
-    Block item = Block::Stone;
-    float x = 0.0f;
-    float z = 0.0f;
-    float y = 0.25f;
-    float vy = 0.0f;
-    float t = 0.0f;
-    float pickup_delay = 0.12f;
-};
-static std::vector<ItemDrop> g_drops;
-static int g_target_drop = -1; // indice em g_drops sob a mira (se houver)
-
-// Module status enum (precisa vir antes de struct Module)
-enum class ModuleStatus {
-    Available,      // Can be built
-    Blocked,        // Missing resources
-    Building,       // Under construction
-    Active,         // Running normally
-    NoPower,        // Needs energy
-    Damaged         // Needs repair
-};
-
-struct Module {
-    int x = 0;
-    int y = 0;
-    Block type = Block::SolarPanel;
-    float t = 0.0f;
-    float health = 100.0f;     // 0-100, se <= 0 fica Damaged
-    ModuleStatus status = ModuleStatus::Active;
-};
-static std::vector<Module> g_modules;
+// ModuleStatus enum + Module struct + g_modules moved to modules_building.h/.cpp
+// (verbatim) - same stage as above. modules_building.h (included above) supplies the
+// extern declarations this file relies on (world/minimap render, HUD, raycast placement/
+// removal, build_physics_test_map).
 
 // ============= SISTEMA DE ILUMINACAO 2D AVANCADA (RTX FAKE) =============
 // Estrutura para fontes de luz dinamicas
@@ -413,191 +381,12 @@ static bool g_debug_bloom = false;
 static bool g_debug_lights = false;
 
 // ============= Generate Base (Landing Site) =============
-void generate_base(World& world) {
-    g_build_slots.clear();
-    
-    // Top-down: escolher um "bom ponto" perto do centro (evita agua/gelo e terreno muito inclinado)
-    int center_x = world.w / 2;
-    int center_y = world.h / 2;
-    int best_x = center_x;
-    int best_y = center_y;
-    int best_score = std::numeric_limits<int>::min();
-
-    // Margens: base/rocket/domo usam offsets negativos em Y (para "cima" no mapa)
-    int margin_x = 40;
-    int margin_y = 30;
-
-    for (int y = center_y - 45; y <= center_y + 45; y += 2) {
-        for (int x = center_x - 70; x <= center_x + 70; x += 2) {
-            if (x < margin_x || x >= world.w - margin_x) continue;
-            if (y < margin_y || y >= world.h - margin_y) continue;
-
-            int score = 0;
-            int16_t min_h = std::numeric_limits<int16_t>::max();
-            int16_t max_h = std::numeric_limits<int16_t>::min();
-            // Amostra uma "área de pouso" menor, suficiente para decidir.
-            for (int dy = -10; dy <= 10; ++dy) {
-                for (int dx = -18; dx <= 18; ++dx) {
-                    int sx = x + dx;
-                    int sy = y + dy;
-                    if (!world.in_bounds(sx, sy)) { score -= 10; continue; }
-
-                    int16_t hh = world.height_at(sx, sy);
-                    min_h = std::min(min_h, hh);
-                    max_h = std::max(max_h, hh);
-
-                    // Penalizar objetos (rochas/minerios/modulos) na area de pouso
-                    if (object_block_at(world, sx, sy) != Block::Air) score -= 6;
-
-                    // Preferir solo seco/estavel
-                    Block surface = surface_block_at(world, sx, sy);
-                    if (surface == Block::Water || surface == Block::Ice) score -= 10;
-                    else if (surface == Block::Snow) score -= 2;
-                    else if (surface == Block::Sand) score += 1;
-                    else if (surface == Block::Dirt) score += 2;
-                    else if (surface == Block::Grass) score += 3;
-                }
-            }
-
-            // Penalizar area inclinada (base precisa ser plana)
-            int range = (int)max_h - (int)min_h;
-            score -= range * 6;
-            if (min_h <= 8) score -= 30; // muito perto de baixadas geladas
-
-            if (score > best_score) {
-                best_score = score;
-                best_x = x;
-                best_y = y;
-            }
-        }
-    }
-
-    g_base_x = best_x;
-    int surface = best_y;
-    g_base_y = surface;
-
-    // === FLATTEN HEIGHTMAP (base precisa ser plana no terreno 3D) ===
-    int16_t base_h = world.height_at(best_x, surface);
-    for (int dy = -30; dy <= 25; ++dy) {
-        for (int dx = -40; dx <= 40; ++dx) {
-            int tx = best_x + dx;
-            int ty = surface + dy;
-            if (!world.in_bounds(tx, ty)) continue;
-            world.set_height(tx, ty, base_h);
-            // Limpar objetos existentes (rochas/minerios) para nao poluir a base
-            if (object_block_at(world, tx, ty) != Block::Air) {
-                world.set(tx, ty, Block::Air);
-            }
-        }
-    }
-     
-    // === PLATAFORMA DA BASE (3D) ===
-    // A base anterior era desenhada como "sprite" no grid (bom para top-down),
-    // mas em camera 3D isso parecia um desenho no chao. Aqui criamos uma plataforma real.
-    static constexpr int kPadHalfW = 22;
-    static constexpr int kPadHalfH = 12;
-
-    // Levantar 1 unidade de heightmap (=> 0.25 no mundo) para dar volume nas bordas via paredes.
-    int16_t pad_h = (int16_t)std::clamp((int)base_h + 1, 0, 256);
-
-    for (int dy = -kPadHalfH; dy <= kPadHalfH; ++dy) {
-        for (int dx = -kPadHalfW; dx <= kPadHalfW; ++dx) {
-            int tx = best_x + dx;
-            int ty = surface + dy;
-            if (!world.in_bounds(tx, ty)) continue;
-
-            world.set_height(tx, ty, pad_h);
-
-            // Limpar objetos existentes (rochas/minerios) para nao poluir a base
-            if (object_block_at(world, tx, ty) != Block::Air) {
-                world.set(tx, ty, Block::Air);
-            }
-
-            world.set_ground(tx, ty, Block::LandingPad);
-            world.set(tx, ty, Block::LandingPad);
-        }
-    }
-
-    auto place_slot = [&](int sx, int sy, const std::string& label) {
-        if (!world.in_bounds(sx, sy)) return;
-        world.set_ground(sx, sy, Block::BuildSlot);
-        world.set(sx, sy, Block::BuildSlot);
-        g_build_slots.push_back({sx, sy, Block::Air, label});
-    };
-
-    // === SLOTS DE CONSTRUCAO (organizados em grid) ===
-    int cx = best_x;
-    int cy = surface;
-    int front_y = cy - 6;
-    int back_y = cy + 5;
-    int mid_y = cy + 1;
-
-    // Solar (3 slots)
-    for (int i = 0; i < 3; ++i) {
-        int sx = cx - 12 + i * 2;
-        place_slot(sx, front_y, "Solar " + std::to_string(i + 1));
-    }
-
-    // Agua / Oxigenio
-    place_slot(cx + 6, front_y, "Water Extractor");
-    place_slot(cx + 8, front_y, "O2 Generator");
-
-    // Estufas (2 slots)
-    place_slot(cx - 14, back_y, "Greenhouse 1");
-    place_slot(cx - 12, back_y, "Greenhouse 2");
-
-    // Terraformacao (CO2 + Terraformer)
-    place_slot(cx + 12, back_y, "CO2 Factory");
-    place_slot(cx + 14, back_y, "Terraformer");
-
-    // Habitat (centro)
-    place_slot(cx - 1, mid_y, "Habitat");
-
-    // === DECORACAO 3D (simples) ===
-    // Pequeno "wreck" de foguete (nao deitado como sprite)
-    {
-        int rx = cx + 14;
-        int ry = cy - 1;
-        for (int dy = -1; dy <= 1; ++dy) {
-            for (int dx = -1; dx <= 1; ++dx) {
-                if (world.in_bounds(rx + dx, ry + dy)) world.set(rx + dx, ry + dy, Block::RocketHull);
-            }
-        }
-        if (world.in_bounds(rx, ry)) world.set(rx, ry, Block::RocketEngine);
-        if (world.in_bounds(rx, ry - 2)) world.set(rx, ry - 2, Block::RocketNose);
-    }
-
-    // Pequeno "hub" em domo (anel)
-    {
-        int dx0 = cx - 12;
-        int dy0 = cy - 1;
-        for (int dy = -2; dy <= 2; ++dy) {
-            for (int dx = -2; dx <= 2; ++dx) {
-                int tx = dx0 + dx;
-                int ty = dy0 + dy;
-                if (!world.in_bounds(tx, ty)) continue;
-
-                if (std::abs(dx) == 2 || std::abs(dy) == 2) {
-                    world.set(tx, ty, Block::DomeFrame);
-                } else if (dx == 0 && dy == 0) {
-                    world.set(tx, ty, Block::DomeGlass);
-                }
-            }
-        }
-        if (world.in_bounds(dx0, dy0 - 3)) world.set(dx0, dy0 - 3, Block::Antenna);
-    }
-
-    // === MODULO INICIAL (painel solar) ===
-    if (!g_build_slots.empty()) {
-        int sx = g_build_slots[0].x;
-        int sy = g_build_slots[0].y;
-        world.set(sx, sy, Block::SolarPanel);
-        g_modules.push_back(Module{sx, sy, Block::SolarPanel, 0.0f});
-        g_build_slots[0].assigned_module = Block::SolarPanel;
-    }
-    
-    world.rebuild_surface_cache();
-}
+// generate_base() moved to modules_building.h/.cpp (verbatim) - this is the
+// items_particles/modules_building/inventory_crafting extraction stage.
+// modules_building.h (included at the top of this file) supplies its
+// declaration; player_physics.cpp's spawn_player_new_game() (which calls it to
+// set up the landing site on a new game) now gets it from that header too,
+// instead of its own local forward declaration.
 
 // GameState enum + g_state, the toast/screen-flash/collect-popup/unlock-popup globals,
 // the feedback functions (set_toast/show_error/show_success/add_collect_popup/
@@ -606,7 +395,13 @@ void generate_base(World& world) {
 // moved to game_state.h/game_state.cpp (game state / feedback / onboarding extraction
 // stage).
 
-static float g_day_time = 0.0f;
+// g_day_time lost "static" here: modules_building.cpp's update_modules() (extracted from
+// this file) now reads/writes it from another translation unit - same pattern as
+// g_oxygen/g_water_res/etc. in textures.cpp. kDayLength stays static constexpr here (this
+// file's render/sky code still uses it directly); modules_building.cpp keeps its own copy
+// of the same literal value rather than sharing it via extern, since it's compile-time
+// state, not mutable - same pattern as kTempThawing in world.cpp.
+float g_day_time = 0.0f;
 static constexpr float kDayLength = 150.0f; // seconds
 
 static float g_stats_timer = 0.0f;
@@ -650,16 +445,10 @@ static float estimate_text_w_px(const std::string& s) {
 // ============= Save/Load =============
 static const char* kSavePath = "save_slot0.tf2d";
 
-static void rebuild_modules_from_world() {
-    g_modules.clear();
-    if (!g_world) return;
-    for (int y = 0; y < g_world->h; ++y) {
-        for (int x = 0; x < g_world->w; ++x) {
-            Block b = g_world->get(x, y);
-            if (is_module(b)) g_modules.push_back(Module{x, y, b, 0.0f});
-        }
-    }
-}
+// rebuild_modules_from_world() moved to modules_building.h/.cpp (verbatim) - same stage
+// as generate_base() above. modules_building.h (included at the top of this file)
+// supplies its declaration; save_game()/load_game() below (which stay in this file, a
+// separate future save_load extraction stage) still call it as before.
 
 static bool save_game(const char* path) {
     if (!g_world) return false;
@@ -1726,32 +1515,12 @@ bool reload_camera_config(bool create_if_missing) {
 // MODULE & RESOURCE SYSTEM - Complete Gameplay Loop
 // ============================================================================
 
-struct CraftCost {
-    int stone = 0;
-    int iron = 0;
-    int coal = 0;
-    int wood = 0;
-    int copper = 0;
-    int ice = 0;
-    int crystal = 0;
-    int metal = 0;
-    int organic = 0;
-    int components = 0;
-};
+// CraftCost struct moved to inventory_crafting.h/.cpp (verbatim) - this is the
+// items_particles/modules_building/inventory_crafting extraction stage.
+// inventory_crafting.h (included at the top of this file) supplies it.
 
-// Module production/consumption rates (per minute)
-struct ModuleStats {
-    const char* name;
-    const char* description;
-    float energy_production = 0.0f;   // +Energy/min
-    float energy_consumption = 0.0f;  // -Energy/min
-    float oxygen_production = 0.0f;   // +O2/min
-    float water_production = 0.0f;    // +Water/min
-    float food_production = 0.0f;     // +Food/min
-    float integrity_bonus = 0.0f;     // Repair rate/min
-    float co2_production = 0.0f;      // For terraforming
-    float construction_time = 30.0f;  // Seconds to build
-};
+// ModuleStats struct moved to modules_building.h/.cpp (verbatim) - same stage.
+// modules_building.h (included at the top of this file) supplies it.
 
 // Construction in progress
 // Note: ConstructionJob, Alert, g_construction_queue, g_alerts, g_base_integrity
@@ -1760,10 +1529,15 @@ struct ModuleStats {
 static constexpr float kBaseIntegrityMax = 100.0f;
 static constexpr float kBaseIntegrityDecayRate = 0.5f;  // Per minute without workshop
 
-// Cooldown para evitar spam de alertas
-static std::unordered_map<std::string, float> g_alert_cooldowns;
+// Cooldown para evitar spam de alertas. Lost "static": modules_building.cpp's
+// update_modules() (extracted from this file) now iterates it (cooldown countdown) from
+// another translation unit - same pattern as g_oxygen/g_water_res/etc. in textures.cpp.
+std::unordered_map<std::string, float> g_alert_cooldowns;
 
-static void add_alert(const std::string& msg, float r, float g, float b, float duration = 3.0f, float cooldown = 5.0f) {
+// Lost "static": modules_building.cpp's start_construction()/update_modules() (extracted
+// from this file) now call it from another translation unit - same pattern as
+// g_oxygen/g_water_res/etc. in textures.cpp.
+void add_alert(const std::string& msg, float r, float g, float b, float duration = 3.0f, float cooldown = 5.0f) {
     // Check cooldown
     auto it = g_alert_cooldowns.find(msg);
     if (it != g_alert_cooldowns.end() && it->second > 0.0f) {
@@ -1781,569 +1555,61 @@ static void add_alert(const std::string& msg, float r, float g, float b, float d
     g_alert_cooldowns[msg] = cooldown;
 }
 
-// Get module statistics
-static ModuleStats get_module_stats(Block b) {
-    ModuleStats s{};
-    switch (b) {
-        case Block::SolarPanel:
-            s.name = "Painel Solar";
-            s.description = "Gera energia basica";
-            s.energy_production = 3.0f;
-            s.construction_time = 15.0f;
-            break;
-        case Block::EnergyGenerator:
-            s.name = "Gerador de Energia";
-            s.description = "Fonte principal de energia";
-            s.energy_production = 8.0f;
-            s.energy_consumption = 0.0f;
-            s.construction_time = 45.0f;
-            break;
-        case Block::OxygenGenerator:
-            s.name = "Gerador de Oxigenio";
-            s.description = "Produz O2 para a base";
-            s.oxygen_production = 2.0f;
-            s.energy_consumption = 1.0f;
-            s.construction_time = 30.0f;
-            break;
-        case Block::WaterExtractor:
-            s.name = "Purificador de Agua";
-            s.description = "Extrai e purifica agua";
-            s.water_production = 1.5f;
-            s.energy_consumption = 0.8f;
-            s.construction_time = 25.0f;
-            break;
-        case Block::Greenhouse:
-            s.name = "Estufa";
-            s.description = "Produz comida";
-            s.food_production = 1.0f;
-            s.energy_consumption = 0.5f;
-            s.construction_time = 40.0f;
-            break;
-        case Block::Workshop:
-            s.name = "Oficina";
-            s.description = "Repara a base";
-            s.integrity_bonus = 2.0f;
-            s.energy_consumption = 1.5f;
-            s.construction_time = 60.0f;
-            break;
-        case Block::CO2Factory:
-            s.name = "Fabrica de CO2";
-            s.description = "Aquece o planeta";
-            s.co2_production = 0.5f;
-            s.energy_consumption = 2.0f;
-            s.construction_time = 50.0f;
-            break;
-        case Block::Habitat:
-            s.name = "Habitat";
-            s.description = "Moradia extra";
-            s.energy_consumption = 0.3f;
-            s.construction_time = 90.0f;
-            break;
-        case Block::TerraformerBeacon:
-            s.name = "Terraformador";
-            s.description = "Terraformacao avancada";
-            s.energy_consumption = 5.0f;
-            s.construction_time = 120.0f;
-            break;
-        default:
-            s.name = "Unknown";
-            s.description = "";
-            break;
-    }
-    return s;
-}
+// get_module_stats() moved to modules_building.h/.cpp (verbatim) - this is the
+// items_particles/modules_building/inventory_crafting extraction stage.
+// modules_building.h (included at the top of this file) supplies its
+// declaration.
 
-// Module build costs (updated with new resources)
-static CraftCost get_module_cost(Block b) {
-    CraftCost c{};
-    switch (b) {
-        case Block::SolarPanel:       
-            c.iron = 30; c.copper = 10; 
-            break;
-        case Block::EnergyGenerator:
-            c.iron = 40; c.crystal = 20; c.copper = 25;
-            break;
-        case Block::OxygenGenerator:  
-            c.ice = 50; c.iron = 50; c.copper = 20; 
-            break;
-        case Block::WaterExtractor:   
-            c.ice = 30; c.metal = 20; c.copper = 15; 
-            break;
-        case Block::Greenhouse:       
-            c.organic = 40; c.iron = 25; c.ice = 25; 
-            break;
-        case Block::Workshop:
-            c.iron = 60; c.components = 30; c.copper = 40;
-            break;
-        case Block::CO2Factory:       
-            c.iron = 60; c.coal = 50; c.copper = 30; 
-            break;
-        case Block::Habitat:          
-            c.stone = 80; c.iron = 60; c.copper = 40; c.metal = 30; 
-            break;
-        case Block::TerraformerBeacon: 
-            c.iron = 100; c.crystal = 50; c.components = 40; c.copper = 60; 
-            break;
-        default: break;
-    }
-    return c;
-}
+// get_module_cost() moved to inventory_crafting.h/.cpp (verbatim) - same stage.
+// inventory_crafting.h (included at the top of this file) supplies it.
 
-// Forward declaration - defined later in file
-static bool can_afford(const CraftCost& c);
+// can_afford()/spend_cost() forward declarations removed: both moved to
+// inventory_crafting.h/.cpp (verbatim, with can_afford/spend_cost/refund_cost
+// deduplicated into a single pointer-to-member table - see the comment above
+// can_afford() in inventory_crafting.cpp), so inventory_crafting.h (included at
+// the top of this file) now supplies real declarations instead.
 
-// Forward declaration - defined later in file
-static void spend_cost(const CraftCost& c);
+// module_cost_string() moved to inventory_crafting.h/.cpp (verbatim) - same stage.
 
-static std::string module_cost_string(const CraftCost& c) {
-    std::string s;
-    auto add = [&](const char* name, int need, int have) {
-        if (need <= 0) return;
-        if (!s.empty()) s += " ";
-        s += name;
-        s += ":" + std::to_string(need);
-        if (have < need) s += "(!)";
-    };
-    add("Pedra", c.stone, g_inventory[(int)Block::Stone]);
-    add("Ferro", c.iron, g_inventory[(int)Block::Iron]);
-    add("Carvao", c.coal, g_inventory[(int)Block::Coal]);
-    add("Madeira", c.wood, g_inventory[(int)Block::Wood]);
-    add("Cobre", c.copper, g_inventory[(int)Block::Copper]);
-    add("Gelo", c.ice, g_inventory[(int)Block::Ice]);
-    add("Cristal", c.crystal, g_inventory[(int)Block::Crystal]);
-    add("Metal", c.metal, g_inventory[(int)Block::Metal]);
-    add("Organico", c.organic, g_inventory[(int)Block::Organic]);
-    add("Comp", c.components, g_inventory[(int)Block::Components]);
-    return s.empty() ? "Gratis" : s;
-}
+// get_module_status()/status_string() moved to modules_building.cpp (verbatim,
+// both stay static there - grep confirms neither is called anywhere outside this
+// module, pre-existing dead code from before this refactor).
 
-// Get module status for display
-static ModuleStatus get_module_status(Block b) {
-    // Check if under construction
-    for (const auto& job : g_construction_queue) {
-        if (job.active && job.module_type == b) {
-            return ModuleStatus::Building;
-        }
-    }
-    
-    // Check if we have resources
-    CraftCost cost = get_module_cost(b);
-    if (!can_afford(cost)) {
-        return ModuleStatus::Blocked;
-    }
-    
-    return ModuleStatus::Available;
-}
+// start_construction() moved to modules_building.h/.cpp (verbatim) -
+// modules_building.h supplies its declaration.
 
-static const char* status_string(ModuleStatus s) {
-    switch (s) {
-        case ModuleStatus::Available: return "DISPONIVEL";
-        case ModuleStatus::Blocked: return "BLOQUEADO";
-        case ModuleStatus::Building: return "CONSTRUINDO";
-        case ModuleStatus::Active: return "ATIVO";
-        case ModuleStatus::NoPower: return "SEM ENERGIA";
-        case ModuleStatus::Damaged: return "DANIFICADO";
-        default: return "???";
-    }
-}
+// UnlockRequirement struct + get_unlock_requirement() moved to
+// modules_building.cpp (verbatim, both stay file-local/static there - only used
+// internally by is_unlocked/check_unlocks/unlock_progress_string, all in the same
+// file).
 
-// Start construction of a module
-static bool start_construction(Block module_type, int slot_index) {
-    CraftCost cost = get_module_cost(module_type);
-    if (!can_afford(cost)) {
-        add_alert("Recursos insuficientes!", 1.0f, 0.3f, 0.3f);
-        return false;
-    }
-    
-    spend_cost(cost);
-    
-    ModuleStats stats = get_module_stats(module_type);
-    ConstructionJob job;
-    job.module_type = module_type;
-    job.slot_index = slot_index;
-    job.time_remaining = stats.construction_time;
-    job.total_time = stats.construction_time;
-    job.active = true;
-    g_construction_queue.push_back(job);
-    
-    add_alert("Construcao iniciada: " + std::string(stats.name), 0.3f, 1.0f, 0.5f);
-    return true;
-}
+// is_unlocked()/check_unlocks()/unlock_progress_string() moved to
+// modules_building.h/.cpp (verbatim) - modules_building.h supplies their
+// declarations. check_unlocks() needs this external linkage for a new reason beyond
+// main.cpp's own call site: items_particles.cpp's on_pickup_item() now also calls it,
+// from another translation unit.
 
-// Legacy unlock requirements (for backward compatibility)
-struct UnlockRequirement {
-    int stone = 0;
-    int iron = 0;
-    int coal = 0;
-    int copper = 0;
-    int wood = 0;
-};
+// module_cost()/cost_string() moved to inventory_crafting.h/.cpp (verbatim) -
+// inventory_crafting.h supplies their declarations. NOTE: module_cost()/
+// get_module_cost() and cost_string()/module_cost_string() are two pre-existing,
+// similarly-named-but-different function pairs (one for the instant right-click
+// placement path, one for the build-menu/construction-queue path) - this stage
+// preserves both as-is, it does not merge them (see plan).
 
-static UnlockRequirement get_unlock_requirement(Block b) {
-    UnlockRequirement r{};
-    // Progressive unlock requirements - collect resources to unlock modules
-    switch (b) {
-        case Block::SolarPanel:       r.iron = 0; break;  // Already unlocked
-        case Block::WaterExtractor:   r.stone = 5; break; // Colete pedra
-        case Block::OxygenGenerator:  r.iron = 5; break;  // Colete ferro
-        case Block::Greenhouse:       r.stone = 10; r.iron = 5; break;  // Recursos variados
-        case Block::CO2Factory:       r.iron = 10; r.coal = 5; break;   // Precisa carvao
-        case Block::Habitat:          r.iron = 15; r.stone = 15; break; // Mais avancado
-        case Block::TerraformerBeacon: r.iron = 25; r.copper = 10; break; // Final
-        default: break;
-    }
-    return r;
-}
+// can_afford()/spend_cost()/refund_cost() moved to inventory_crafting.h/.cpp,
+// WITH the one deliberate behavior-preserving change of this stage: the three
+// near-identical 10-line bodies (each hand-listing the same 10 CraftCost fields
+// against g_inventory[(int)Block::X]) are now a single pointer-to-member table
+// iterated by all three - see inventory_crafting.cpp for the verification notes.
 
-static bool is_unlocked(Block b) {
-    switch (b) {
-        case Block::SolarPanel:       return g_unlocks.solar_unlocked;
-        case Block::WaterExtractor:   return g_unlocks.water_extractor_unlocked;
-        case Block::OxygenGenerator:  return g_unlocks.o2_generator_unlocked;
-        case Block::Greenhouse:       return g_unlocks.greenhouse_unlocked;
-        case Block::CO2Factory:       return g_unlocks.co2_factory_unlocked;
-        case Block::Habitat:          return g_unlocks.habitat_unlocked;
-        case Block::TerraformerBeacon: return g_unlocks.terraformer_unlocked;
-        default: return true; // Non-modules are always available
-    }
-}
-
-static void check_unlocks() {
-    // Check and unlock modules based on total collected resources
-    auto check = [](bool& flag, const UnlockRequirement& r) {
-        if (flag) return;
-        if (g_unlocks.total_stone >= r.stone &&
-            g_unlocks.total_iron >= r.iron &&
-            g_unlocks.total_coal >= r.coal &&
-            g_unlocks.total_copper >= r.copper &&
-            g_unlocks.total_wood >= r.wood) {
-            flag = true;
-        }
-    };
-    
-    check(g_unlocks.solar_unlocked, get_unlock_requirement(Block::SolarPanel));
-    check(g_unlocks.water_extractor_unlocked, get_unlock_requirement(Block::WaterExtractor));
-    check(g_unlocks.o2_generator_unlocked, get_unlock_requirement(Block::OxygenGenerator));
-    check(g_unlocks.greenhouse_unlocked, get_unlock_requirement(Block::Greenhouse));
-    check(g_unlocks.co2_factory_unlocked, get_unlock_requirement(Block::CO2Factory));
-    check(g_unlocks.habitat_unlocked, get_unlock_requirement(Block::Habitat));
-    
-    // Terraformer only unlocks after all survival modules are built
-    if (!g_unlocks.terraformer_unlocked) {
-        bool has_survival = false;
-        for (const auto& m : g_modules) {
-            if (m.type == Block::Habitat) has_survival = true;
-        }
-        // Need habitat + basic modules unlocked
-        if (has_survival && g_unlocks.habitat_unlocked && 
-            g_unlocks.o2_generator_unlocked && g_unlocks.greenhouse_unlocked) {
-            UnlockRequirement r = get_unlock_requirement(Block::TerraformerBeacon);
-            if (g_unlocks.total_stone >= r.stone &&
-                g_unlocks.total_iron >= r.iron &&
-                g_unlocks.total_coal >= r.coal &&
-                g_unlocks.total_copper >= r.copper) {
-                g_unlocks.terraformer_unlocked = true;
-            }
-        }
-    }
-}
-
-static std::string unlock_progress_string(Block b) {
-    UnlockRequirement r = get_unlock_requirement(b);
-    std::string s;
-    auto add = [&](const char* name, int have, int need) {
-        if (need <= 0) return;
-        if (!s.empty()) s += " ";
-        s += name;
-        s += std::to_string(have) + "/" + std::to_string(need);
-    };
-    add("St", g_unlocks.total_stone, r.stone);
-    add("Fe", g_unlocks.total_iron, r.iron);
-    add("C", g_unlocks.total_coal, r.coal);
-    add("Cu", g_unlocks.total_copper, r.copper);
-    add("W", g_unlocks.total_wood, r.wood);
-    return s;
-}
-
-static CraftCost module_cost(Block b) {
-    CraftCost c{};
-    switch (b) {
-        case Block::SolarPanel:       c.iron = 3; c.stone = 2; break;
-        case Block::WaterExtractor:   c.iron = 4; c.stone = 4; c.copper = 2; break;
-        case Block::OxygenGenerator:  c.iron = 5; c.coal = 3; c.copper = 2; break;
-        case Block::Greenhouse:       c.iron = 6; c.wood = 4; c.copper = 3; c.stone = 4; break;
-        case Block::CO2Factory:       c.iron = 8; c.coal = 6; c.copper = 4; c.stone = 6; break;
-        case Block::Habitat:          c.iron = 10; c.stone = 12; c.copper = 6; c.wood = 4; break;
-        case Block::TerraformerBeacon: c.iron = 15; c.coal = 10; c.copper = 10; c.stone = 10; break;
-        default: break;
-    }
-    return c;
-}
-
-static bool can_afford(const CraftCost& c) {
-    return g_inventory[(int)Block::Stone] >= c.stone &&
-           g_inventory[(int)Block::Iron] >= c.iron &&
-           g_inventory[(int)Block::Coal] >= c.coal &&
-           g_inventory[(int)Block::Wood] >= c.wood &&
-           g_inventory[(int)Block::Copper] >= c.copper &&
-           g_inventory[(int)Block::Ice] >= c.ice &&
-           g_inventory[(int)Block::Crystal] >= c.crystal &&
-           g_inventory[(int)Block::Metal] >= c.metal &&
-           g_inventory[(int)Block::Organic] >= c.organic &&
-           g_inventory[(int)Block::Components] >= c.components;
-}
-
-static void spend_cost(const CraftCost& c) {
-    g_inventory[(int)Block::Stone] -= c.stone;
-    g_inventory[(int)Block::Iron] -= c.iron;
-    g_inventory[(int)Block::Coal] -= c.coal;
-    g_inventory[(int)Block::Wood] -= c.wood;
-    g_inventory[(int)Block::Copper] -= c.copper;
-    g_inventory[(int)Block::Ice] -= c.ice;
-    g_inventory[(int)Block::Crystal] -= c.crystal;
-    g_inventory[(int)Block::Metal] -= c.metal;
-    g_inventory[(int)Block::Organic] -= c.organic;
-    g_inventory[(int)Block::Components] -= c.components;
-}
-
-static void refund_cost(const CraftCost& c) {
-    g_inventory[(int)Block::Stone] += c.stone;
-    g_inventory[(int)Block::Iron] += c.iron;
-    g_inventory[(int)Block::Coal] += c.coal;
-    g_inventory[(int)Block::Wood] += c.wood;
-    g_inventory[(int)Block::Copper] += c.copper;
-    g_inventory[(int)Block::Ice] += c.ice;
-    g_inventory[(int)Block::Crystal] += c.crystal;
-    g_inventory[(int)Block::Metal] += c.metal;
-    g_inventory[(int)Block::Organic] += c.organic;
-    g_inventory[(int)Block::Components] += c.components;
-}
-
-static std::string cost_string(const CraftCost& c) {
-    std::string s;
-    auto add = [&](const char* name, int v) {
-        if (v <= 0) return;
-        if (!s.empty()) s += " ";
-        s += name;
-        s += std::to_string(v);
-    };
-    add("St", c.stone);
-    add("Fe", c.iron);
-    add("C", c.coal);
-    add("Cu", c.copper);
-    add("W", c.wood);
-    return s.empty() ? "-" : s;
-}
-
-// ============= Effects =============
-static void spawn_block_particles(Block b, float cx, float cy, int world_h) {
-    float r, g, bl, a;
-    block_color(b, (int)cy, world_h, r, g, bl, a);
-    for (int i = 0; i < 12; ++i) {
-        float ang = rng_next_f01() * 6.2831853f;
-        float spd = 2.0f + rng_next_f01() * 4.5f;
-        Particle p;
-        p.pos = {cx + (rng_next_f01() - 0.5f) * 0.15f, cy + (rng_next_f01() - 0.5f) * 0.15f};
-        p.vel = {std::cos(ang) * spd, std::sin(ang) * spd - 2.0f};
-        p.life = 0.55f + rng_next_f01() * 0.35f;
-        p.r = r;
-        p.g = g;
-        p.b = bl;
-        p.a = 1.0f;
-        g_particles.push_back(p);
-    }
-}
-
-static Block drop_item_for_block(Block broken) {
-    // Simplifica drops para itens realmente uteis no prototipo.
-    switch (broken) {
-        case Block::Grass:  return Block::Dirt;
-        case Block::Leaves: return Block::Organic;
-        case Block::Sand:   return Block::Dirt;
-        case Block::Snow:   return Block::Ice;
-        default:            return broken;
-    }
-}
-
-static float drop_spawn_y_for_block(Block broken) {
-    if (broken == Block::Leaves) return 0.70f;
-    if (is_module(broken)) return 1.15f;
-    if (is_solid(broken)) return 0.95f;
-    return 0.35f;
-}
-
-static void spawn_item_drop(Block item, float x, float z, float spawn_y) {
-    ItemDrop d;
-    d.item = item;
-    d.x = x;
-    d.z = z;
-    d.y = spawn_y;
-    d.vy = 2.8f + rng_next_f01() * 1.2f;
-    d.t = rng_next_f01() * 10.0f;
-    d.pickup_delay = 0.12f;
-    g_drops.push_back(d);
-
-    // Limit simples para evitar crescimento infinito em casos extremos
-    if (g_drops.size() > 500u) {
-        g_drops.erase(g_drops.begin(), g_drops.begin() + 100);
-    }
-}
-
-static void on_pickup_item(Block item, float x, float z) {
-    g_inventory[(int)item]++;
-
-    // Bonus de sobrevivencia (reforça onboarding: gelo -> agua)
-    if (item == Block::Ice) {
-        g_player_water = std::min(100.0f, g_player_water + 25.0f);
-    } else if (item == Block::Organic) {
-        g_player_food = std::min(100.0f, g_player_food + 8.0f);
-    }
-
-    // Unlock tracking: total "coletado" (agora no pickup, nao no break)
-    switch (item) {
-        case Block::Stone: g_unlocks.total_stone++; break;
-        case Block::Iron:  g_unlocks.total_iron++; break;
-        case Block::Coal:  g_unlocks.total_coal++; break;
-        case Block::Copper: g_unlocks.total_copper++; break;
-        case Block::Wood:  g_unlocks.total_wood++; break;
-        default: break;
-    }
-
-    // Popup leve de coleta (feedback no HUD, estilo Minicraft)
-    {
-        float cr, cg, cb, ca;
-        block_color(item, (int)std::floor(g_player.pos.y), g_world->h, cr, cg, cb, ca);
-        float jitter_x = (rng_next_f01() - 0.5f) * 90.0f;
-
-        std::string txt = "+1 ";
-        txt += block_name(item);
-        if (item == Block::Ice) txt += " (+25 Agua)";
-        else if (item == Block::Organic) txt += " (+8 Comida)";
-
-        add_collect_popup(jitter_x, 0.0f, txt, cr, cg, cb, item, 1);
-    }
-    (void)x; (void)z;
-
-    if (!g_onboarding.shown_first_collect) {
-        show_tip("Tab para abrir menu de construcao", g_onboarding.shown_first_collect);
-    }
-
-    bool had_solar = g_unlocks.solar_unlocked;
-    bool had_water = g_unlocks.water_extractor_unlocked;
-    bool had_o2 = g_unlocks.o2_generator_unlocked;
-    bool had_greenhouse = g_unlocks.greenhouse_unlocked;
-    bool had_co2 = g_unlocks.co2_factory_unlocked;
-    bool had_habitat = g_unlocks.habitat_unlocked;
-    bool had_terraform = g_unlocks.terraformer_unlocked;
-
-    check_unlocks();
-
-    if (!had_solar && g_unlocks.solar_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Painel Solar - Tab para construir");
-    if (!had_water && g_unlocks.water_extractor_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Extrator de Agua - Tab para construir");
-    if (!had_o2 && g_unlocks.o2_generator_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Gerador de O2 - Tab para construir");
-    if (!had_greenhouse && g_unlocks.greenhouse_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Estufa - Tab para construir");
-    if (!had_co2 && g_unlocks.co2_factory_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Fabrica de CO2 - Comece a aquecer!");
-    if (!had_habitat && g_unlocks.habitat_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Habitat - Lar doce lar");
-    if (!had_terraform && g_unlocks.terraformer_unlocked)
-        show_unlock_popup("DESBLOQUEADO!", "Terraformador - Transforme o planeta!");
-}
-
-static void update_item_drops(float dt) {
-    static constexpr float kRestOffset = 0.22f; // Altura do centro do drop acima do solo
-    static constexpr float kGravity = 9.5f;
-    static constexpr float kPickupRadius = 1.25f;   // estilo Minicraft: coleta "perto", sem precisar pisar exatamente
-    static constexpr float kMagnetRadius = 2.75f;   // leve "imã" para o player (facilita coleta em 3D)
-    static constexpr float kMagnetSpeed = 7.5f;     // tiles/s
-    static constexpr float kAimPickupRadius = 1.65f;   // mirando no drop: coleta um pouco mais "fácil"
-    static constexpr float kAimMagnetRadius = 4.25f;   // mirando: imã mais forte (melhora sensação de "vou pegar isso")
-    static constexpr float kAimMagnetSpeed = 18.0f;
-
-    const float pickup_r2 = kPickupRadius * kPickupRadius;
-    const float magnet_r2 = kMagnetRadius * kMagnetRadius;
-    const float aim_pickup_r2 = kAimPickupRadius * kAimPickupRadius;
-    const float aim_magnet_r2 = kAimMagnetRadius * kAimMagnetRadius;
-
-    for (size_t di = 0; di < g_drops.size(); ++di) {
-        ItemDrop& d = g_drops[di];
-        d.t += dt;
-        d.pickup_delay -= dt;
-
-        // Leve atracao ao jogador (apenas apos um pequeno delay, para dar feedback visual do drop)
-        if (d.pickup_delay <= 0.0f) {
-            float dx = g_player.pos.x - d.x;
-            float dz = g_player.pos.y - d.z;
-            float dist2 = dx * dx + dz * dz;
-
-            bool aimed = ((int)di == g_target_drop);
-            float use_magnet_r2 = aimed ? aim_magnet_r2 : magnet_r2;
-            float use_magnet_speed = aimed ? kAimMagnetSpeed : kMagnetSpeed;
-
-            if (dist2 <= use_magnet_r2 && dist2 > 1e-6f) {
-                float dist = std::sqrt(dist2);
-                float step = std::min(use_magnet_speed * dt, dist);
-                float inv = 1.0f / dist;
-                d.x += dx * inv * step;
-                d.z += dz * inv * step;
-            }
-        }
-
-        // Fisica simples (queda/bounce)
-        d.vy -= kGravity * dt;
-        d.y += d.vy * dt;
-
-        // Repouso no chao REAL (altura do heightmap), nao em Y constante (montanhas!)
-        float rest_y = kRestOffset;
-        if (g_world) {
-            int tx = world_to_tile(d.x);
-            int tz = world_to_tile(d.z);
-            if (g_world->in_bounds(tx, tz)) {
-                rest_y = surface_height_at(*g_world, tx, tz) + kRestOffset;
-            }
-        }
-
-        if (d.y < rest_y) {
-            d.y = rest_y;
-            if (std::fabs(d.vy) < 0.8f) d.vy = 0.0f;
-            else d.vy = -d.vy * 0.28f;
-        }
-    }
-
-    // Coleta por proximidade (considera distancia 2D e altura)
-    for (size_t i = 0; i < g_drops.size();) {
-        ItemDrop& d = g_drops[i];
-        if (d.pickup_delay <= 0.0f) {
-            float dx = d.x - g_player.pos.x;
-            float dz = d.z - g_player.pos.y;
-            float dy = d.y - g_player.pos_y;  // Diferenca de altura
-            float dist2_horizontal = dx * dx + dz * dz;
-            float height_diff = std::fabs(dy);
-            
-            float use_pickup_r2 = ((int)i == g_target_drop) ? aim_pickup_r2 : pickup_r2;
-            
-            // Coleta se estiver proximo horizontalmente E verticalmente (dentro de 2 blocos de altura)
-            if (dist2_horizontal <= use_pickup_r2 && height_diff < 2.5f) {
-                on_pickup_item(d.item, d.x, d.z);
-                int removed_idx = (int)i;
-                int last_idx = (int)g_drops.size() - 1;
-                g_drops[i] = g_drops.back();
-                g_drops.pop_back();
-                if (g_target_drop == removed_idx) {
-                    g_target_drop = -1;
-                } else if (g_target_drop == last_idx) {
-                    g_target_drop = removed_idx;
-                }
-                continue;
-            }
-        }
-        ++i;
-    }
-}
+// spawn_block_particles()/drop_item_for_block()/drop_spawn_y_for_block()/
+// spawn_item_drop()/on_pickup_item()/update_item_drops() moved to
+// items_particles.h/.cpp (verbatim) - this is the items_particles/
+// modules_building/inventory_crafting extraction stage. items_particles.h
+// (included at the top of this file) supplies the declarations this file relies
+// on (raycast mining/placement in update_game, further below). on_pickup_item()
+// is not declared there - it is only called internally by update_item_drops()
+// (which moved to the same file), so it stays static inside items_particles.cpp.
 
 // ============= OpenGL Setup =============
 static HGLRC setup_opengl(HDC hdc) {
@@ -2598,435 +1864,19 @@ static void render_astronaut(float px, float py, float scale, const Player& play
 }
 
 // try_spawn_tree/terraform_step/recompute_terraform_score/update_phase/melt_ice_around
-// moved to world.cpp (declarations now in world.h). update_modules() below (module
-// system, not terrain) stays in this file for this stage.
+// moved to world.cpp (declarations now in world.h).
 
-static void update_shooting_stars(float dt, float day_phase);
+// update_shooting_stars() forward declaration removed from here: update_modules()
+// (the only caller) moved out of this file (see below), so this file no longer
+// needs to call update_shooting_stars() before its own definition further down.
+// The function itself stays defined in this file (sky/day-night system, a
+// separate future extraction stage) but lost its "static": modules_building.cpp's
+// update_modules() now calls it from another translation unit.
 
-static void update_modules(World& world, float dt) {
-    g_day_time += dt;
-
-    float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
-    float daylight = compute_daylight(day_phase);
-
-    update_shooting_stars(dt, day_phase);
-    
-    // Update alerts timer
-    for (auto it = g_alerts.begin(); it != g_alerts.end();) {
-        it->time_remaining -= dt;
-        if (it->time_remaining <= 0.0f) {
-            it = g_alerts.erase(it);
-        } else {
-            ++it;
-        }
-    }
-    
-    // Update alert cooldowns
-    for (auto& pair : g_alert_cooldowns) {
-        if (pair.second > 0.0f) {
-            pair.second -= dt;
-        }
-    }
-
-    // ========== PROCESS CONSTRUCTION QUEUE ==========
-    for (auto& job : g_construction_queue) {
-        if (!job.active) continue;
-        
-        // Construction requires energy
-        float energy_cost = 2.0f * dt;
-        if (g_base_energy >= energy_cost) {
-            g_base_energy -= energy_cost;
-            job.time_remaining -= dt;
-            
-            if (job.time_remaining <= 0.0f) {
-                // Construction complete!
-                job.active = false;
-                
-                // Place the module
-                if (job.slot_index >= 0 && job.slot_index < (int)g_build_slots.size()) {
-                    BuildSlotInfo& slot = g_build_slots[job.slot_index];
-                    slot.assigned_module = job.module_type;
-                    world.set(slot.x, slot.y, job.module_type);
-                    
-                    Module mod;
-                    mod.type = job.module_type;
-                    mod.x = slot.x;
-                    mod.y = slot.y;
-                    mod.t = 0.0f;
-                    g_modules.push_back(mod);
-                }
-                
-                ModuleStats stats = get_module_stats(job.module_type);
-                add_alert("Construido: " + std::string(stats.name), 0.3f, 1.0f, 0.5f, 4.0f);
-            }
-        } else {
-            add_alert("Construcao parada - Sem energia!", 1.0f, 0.5f, 0.2f);
-        }
-    }
-    
-    // Clean up completed jobs
-    g_construction_queue.erase(
-        std::remove_if(g_construction_queue.begin(), g_construction_queue.end(),
-            [](const ConstructionJob& j) { return !j.active; }),
-        g_construction_queue.end());
-
-    // ========== UPDATE MODULE STATUS ==========
-    // Check energy and health for each module
-    for (Module& m : g_modules) {
-        // Degrade health slowly over time (0.5% per minute)
-        float health_decay = 0.5f / 60.0f * dt;
-        m.health = std::max(0.0f, m.health - health_decay);
-        
-        // Determine status
-        if (m.health <= 0.0f) {
-            m.status = ModuleStatus::Damaged;
-        } else if (g_base_energy <= 0.0f && m.type != Block::SolarPanel && m.type != Block::EnergyGenerator) {
-            m.status = ModuleStatus::NoPower;
-        } else {
-            m.status = ModuleStatus::Active;
-        }
-    }
-    
-    // Count ACTIVE modules (damaged modules don't produce)
-    int solar_count = 0;
-    int energy_gen_count = 0;
-    int water_count = 0;
-    int o2_count = 0;
-    int greenhouse_count = 0;
-    int workshop_count = 0;
-    int co2_factory_count = 0;
-    int habitat_count = 0;
-    int beacon_count = 0;
-    
-    for (const Module& m : g_modules) {
-        // Skip damaged modules
-        if (m.status == ModuleStatus::Damaged) continue;
-        
-        switch (m.type) {
-            case Block::SolarPanel: solar_count++; break;
-            case Block::EnergyGenerator: energy_gen_count++; break;
-            case Block::WaterExtractor: water_count++; break;
-            case Block::OxygenGenerator: o2_count++; break;
-            case Block::Greenhouse: greenhouse_count++; break;
-            case Block::Workshop: workshop_count++; break;
-            case Block::CO2Factory: co2_factory_count++; break;
-            case Block::Habitat: habitat_count++; break;
-            case Block::TerraformerBeacon: beacon_count++; break;
-            default: break;
-        }
-    }
-
-    // ========== BASE CONSTANT CONSUMPTION ==========
-    // The base always consumes resources (per minute converted to per second)
-    float base_o2_consumption = 1.0f / 60.0f * dt;    // -1 O2/min
-    float base_energy_consumption = 2.0f / 60.0f * dt; // -2 Energy/min
-    float base_water_consumption = 1.0f / 60.0f * dt;  // -1 Water/min
-    
-    g_base_oxygen = std::max(0.0f, g_base_oxygen - base_o2_consumption);
-    g_base_energy = std::max(0.0f, g_base_energy - base_energy_consumption);
-    g_base_water = std::max(0.0f, g_base_water - base_water_consumption);
-    
-    // ========== BASE INTEGRITY DECAY ==========
-    // Without workshop, integrity slowly decays
-    float integrity_decay = (kBaseIntegrityDecayRate / 60.0f) * dt;
-    if (workshop_count == 0) {
-        g_base_integrity = std::max(0.0f, g_base_integrity - integrity_decay);
-    }
-
-    // ========== SOLAR PANELS ==========
-    // Generate energy for the BASE (rate per minute: +3/panel)
-    float solar_efficiency = 0.7f + 0.3f * clamp01(g_atmosphere / 50.0f);
-    float solar_rate = 3.0f / 60.0f;  // Per second
-    float energy_produced = (float)solar_count * solar_rate * daylight * solar_efficiency * dt;
-    g_base_energy = std::clamp(g_base_energy + energy_produced, 0.0f, kBaseEnergyMax);
-
-    // ========== ENERGY GENERATORS ==========
-    // Main power source (+8 energy/min)
-    if (energy_gen_count > 0) {
-        float gen_rate = 8.0f / 60.0f;  // Per second
-        float gen_produced = (float)energy_gen_count * gen_rate * dt;
-        g_base_energy = std::clamp(g_base_energy + gen_produced, 0.0f, kBaseEnergyMax);
-    }
-
-    // ========== WATER EXTRACTORS ==========
-    // Extract water (+1.5/min, costs -0.8 energy/min)
-    if (water_count > 0) {
-        float e_cost = (0.8f / 60.0f) * (float)water_count * dt;
-        float water_rate = 1.5f / 60.0f;  // Per second
-        
-        if (g_base_energy >= e_cost) {
-            g_base_energy -= e_cost;
-            float temp_bonus = clamp01((g_temperature + 60.0f) / 80.0f);
-            float water_produced = (float)water_count * water_rate * (0.5f + 0.5f * temp_bonus) * dt;
-            g_base_water = std::clamp(g_base_water + water_produced, 0.0f, kBaseWaterMax);
-        } else {
-            add_alert("Purificador parado - Sem energia!", 1.0f, 0.5f, 0.2f);
-        }
-    }
-
-    // ========== OXYGEN GENERATORS ==========
-    // Produce O2 (+2/min, costs -1 energy/min)
-    if (o2_count > 0) {
-        float e_cost = (1.0f / 60.0f) * (float)o2_count * dt;
-        float o2_rate = 2.0f / 60.0f;  // Per second
-        
-        if (g_base_energy >= e_cost) {
-            g_base_energy -= e_cost;
-            float o2_produced = (float)o2_count * o2_rate * dt;
-            g_base_oxygen = std::clamp(g_base_oxygen + o2_produced, 0.0f, kBaseOxygenMax);
-            g_atmosphere = std::clamp(g_atmosphere + o2_produced * 0.1f, 0.0f, 100.0f);
-        } else {
-            add_alert("Gerador O2 parado - Sem energia!", 1.0f, 0.5f, 0.2f);
-        }
-    }
-
-    // ========== GREENHOUSES ==========
-    // Produce food (+1/min, costs -0.5 energy/min, needs water)
-    if (greenhouse_count > 0) {
-        float e_cost = (0.5f / 60.0f) * (float)greenhouse_count * dt;
-        float w_cost = (0.3f / 60.0f) * (float)greenhouse_count * dt;
-        float food_rate = 1.0f / 60.0f;  // Per second
-        
-        if (g_base_water <= 0.0f) {
-            add_alert("Estufa parada - Sem agua!", 0.2f, 0.6f, 1.0f);
-        } else if (g_base_energy >= e_cost && g_base_water >= w_cost) {
-            g_base_energy -= e_cost;
-            g_base_water -= w_cost;
-            float food_produced = (float)greenhouse_count * food_rate * dt;
-            g_base_food = std::clamp(g_base_food + food_produced, 0.0f, kBaseFoodMax);
-            g_base_oxygen = std::clamp(g_base_oxygen + food_produced * 0.2f, 0.0f, kBaseOxygenMax);
-        } else {
-            add_alert("Estufa parada - Sem energia!", 1.0f, 0.5f, 0.2f);
-        }
-    }
-
-    // ========== WORKSHOP ==========
-    // Repairs base integrity (+2/min, costs -1.5 energy/min)
-    if (workshop_count > 0) {
-        float e_cost = (1.5f / 60.0f) * (float)workshop_count * dt;
-        float repair_rate = 2.0f / 60.0f;  // Per second
-        float module_repair_rate = 5.0f / 60.0f;  // 5% health per minute per workshop
-        
-        if (g_base_energy >= e_cost) {
-            g_base_energy -= e_cost;
-            
-            // Repair base integrity
-            float repair = (float)workshop_count * repair_rate * dt;
-            g_base_integrity = std::clamp(g_base_integrity + repair, 0.0f, kBaseIntegrityMax);
-            
-            // Repair damaged modules
-            for (Module& m : g_modules) {
-                if (m.health < 100.0f) {
-                    m.health = std::min(100.0f, m.health + module_repair_rate * (float)workshop_count * dt);
-                }
-            }
-        } else {
-            add_alert("Oficina parada - Sem energia!", 1.0f, 0.5f, 0.2f);
-        }
-    }
-
-    // ========== CO2 FACTORIES ==========
-    // Release CO2 to warm the planet (costs -2 energy/min)
-    if (co2_factory_count > 0) {
-        float e_cost = (2.0f / 60.0f) * (float)co2_factory_count * dt;
-        
-        if (g_base_energy >= e_cost) {
-            g_base_energy -= e_cost;
-            
-            float co2_rate = 0.5f / 60.0f;  // Per second
-            float co2_produce = (float)co2_factory_count * co2_rate * dt;
-            g_co2_level = std::clamp(g_co2_level + co2_produce, 0.0f, 100.0f);
-            
-            float warming_rate = 0.2f * (float)co2_factory_count * (1.0f - g_temperature / 50.0f);
-            g_temperature = std::clamp(g_temperature + warming_rate * dt / 60.0f, -60.0f, 40.0f);
-            
-            g_atmosphere = std::clamp(g_atmosphere + co2_produce * 0.5f, 0.0f, 100.0f);
-        } else {
-            add_alert("Fabrica CO2 parada - Sem energia!", 1.0f, 0.5f, 0.2f);
-        }
-    }
-
-    // ========== HABITATS ==========
-    // Provide shelter (minimal consumption -0.3 energy/min)
-    if (habitat_count > 0) {
-        float e_cost = (0.3f / 60.0f) * (float)habitat_count * dt;
-        if (g_base_energy >= e_cost) {
-            g_base_energy -= e_cost;
-            // Small passive O2 recycling
-            g_base_oxygen = std::clamp(g_base_oxygen + 0.3f * (float)habitat_count * dt / 60.0f, 0.0f, kBaseOxygenMax);
-        }
-    }
-
-    // ========== TERRAFORMER BEACONS ==========
-    // Advanced terraforming (costs -5 energy/min)
-    if (g_phase >= TerraPhase::Thawing) {
-        for (Module& m : g_modules) {
-            if (m.type != Block::TerraformerBeacon) continue;
-            
-            float e_cost = (5.0f / 60.0f) * dt;
-            if (g_base_energy >= e_cost && g_base_water >= 1.0f) {
-                g_base_energy -= e_cost;
-                
-                m.t += dt;
-                while (m.t >= 0.15f && g_base_water > 0.5f) {
-                    m.t -= 0.15f;
-                    g_base_water = std::max(0.0f, g_base_water - 0.5f);
-                    terraform_step(world, m.x, m.y);
-                    melt_ice_around(world, m.x, m.y, 8);
-                }
-            } else {
-                add_alert("Terraformador parado - Recursos!", 0.8f, 0.3f, 0.8f);
-            }
-        }
-    }
-
-    // ========== PLAYER IS AT BASE - ZONA SEGURA ==========
-    float dx_base = g_player.pos.x - (float)g_base_x;
-    float dy_base = g_player.pos.y - (float)g_base_y;
-    float dist_to_base = std::sqrt(dx_base * dx_base + dy_base * dy_base);
-    bool at_base = (dist_to_base < g_base_cfg.safe_radius);  // Usar raio configuravel
-    
-    if (at_base) {
-        // Recharge O2 from base storage (consumes base O2!)
-        if (g_player_oxygen < 100.0f && g_base_oxygen > 0.0f) {
-            float need = std::min(g_base_cfg.recharge_oxygen_rate * dt, 100.0f - g_player_oxygen);
-            float o2_cost = need * 0.20f;  // Costs 20% extra O2 from base
-            float available = std::min(need, g_base_oxygen - o2_cost);
-            if (available > 0.0f) {
-                g_player_oxygen += available;
-                g_base_oxygen -= (available + o2_cost);
-            }
-        }
-        
-        // Recharge water from base storage
-        if (g_player_water < 100.0f && g_base_water > 0.0f) {
-            float need = std::min(g_base_cfg.recharge_water_rate * dt, 100.0f - g_player_water);
-            float available = std::min(need, g_base_water);
-            g_player_water += available;
-            g_base_water -= available;
-        }
-        
-        // Recharge food from base storage (slowest)
-        if (g_player_food < 100.0f && g_base_food > 0.0f) {
-            float need = std::min(g_base_cfg.recharge_food_rate * dt, 100.0f - g_player_food);
-            float available = std::min(need, g_base_food);
-            g_player_food += available;
-            g_base_food -= available;
-        }
-        
-        // Reparar HP do jogador na zona segura (gratis)
-        if (g_player.hp < 100) {
-            g_player.hp = std::min(100, g_player.hp + (int)(g_base_cfg.repair_player_hp_per_sec * dt + 0.5f));
-        }
-        
-        // Reabastecer jetpack na zona segura (usa energia da base)
-        if (g_player.jetpack_fuel < 100.0f && g_base_energy > 5.0f) {
-            float fuel_need = std::min(g_base_cfg.jetpack_refuel_per_sec * dt, 100.0f - g_player.jetpack_fuel);
-            float energy_cost = fuel_need * 0.1f;  // Consome energia da base
-            if (g_base_energy >= energy_cost) {
-                g_player.jetpack_fuel += fuel_need;
-                g_base_energy -= energy_cost;
-            }
-        }
-        
-        // Can't recharge if base O2 too low!
-        if (g_base_oxygen < 10.0f && g_player_oxygen < 50.0f) {
-            add_alert("Oxigenio da base muito baixo!", 1.0f, 0.3f, 0.3f);
-        }
-    }
-
-    // ========== FAILURE CONSEQUENCES ==========
-    
-    // Oxygen = 0 -> Can't recharge player
-    if (g_base_oxygen <= 0.0f) {
-        add_alert("O2 ZERADO - Nao pode recarregar!", 1.0f, 0.2f, 0.2f);
-    } else if (g_base_oxygen < 20.0f) {
-        add_alert("O2 BAIXO", 1.0f, 0.6f, 0.2f);
-    }
-    
-    // Energy = 0 -> Modules shut down
-    if (g_base_energy <= 0.0f) {
-        add_alert("ENERGIA CRITICA - Modulos desligados!", 1.0f, 0.8f, 0.2f);
-    } else if (g_base_energy < 20.0f) {
-        add_alert("Energia baixa", 1.0f, 0.8f, 0.4f);
-    }
-    
-    // Check for damaged modules
-    int damaged_count = 0;
-    for (const Module& m : g_modules) {
-        if (m.status == ModuleStatus::Damaged) damaged_count++;
-    }
-    if (damaged_count > 0) {
-        add_alert("Modulos danificados: " + std::to_string(damaged_count) + " - Construa Oficina!", 1.0f, 0.5f, 0.2f);
-    }
-    
-    // Integrity = 0 -> Base collapse (severe damage)
-    if (g_base_integrity <= 0.0f) {
-        add_alert("BASE EM COLAPSO!", 1.0f, 0.0f, 0.0f);
-        // Leak resources rapidly
-        g_base_oxygen = std::max(0.0f, g_base_oxygen - 5.0f * dt);
-        g_base_water = std::max(0.0f, g_base_water - 3.0f * dt);
-        // Damage player if at base
-        if (at_base) {
-            g_player.hp = std::max(0, g_player.hp - 1);
-        }
-    } else if (g_base_integrity < 30.0f) {
-        add_alert("Integridade critica - Construa Oficina!", 1.0f, 0.5f, 0.3f);
-    }
-
-    // ========== NATURAL PROCESSES ==========
-    
-    // Natural temperature equilibrium
-    float base_temp = -60.0f + g_co2_level * 0.8f;
-    g_temperature = lerp(g_temperature, base_temp, 0.001f * dt);
-    
-    // Player suit consumption (outside base uses suit tanks faster)
-    float suit_use_mult = at_base ? 0.3f : 1.0f;  // Use less when at base
-    float suit_o2_use = 0.12f * suit_use_mult * dt;
-    float suit_water_use = 0.06f * suit_use_mult * dt;
-    float suit_food_use = 0.03f * suit_use_mult * dt;
-    
-    g_player_oxygen = std::max(0.0f, g_player_oxygen - suit_o2_use);
-    g_player_water = std::max(0.0f, g_player_water - suit_water_use);
-    g_player_food = std::max(0.0f, g_player_food - suit_food_use);
-    
-    // Sync legacy variables for compatibility
-    g_oxygen = g_player_oxygen;
-    g_water_res = g_player_water;
-    g_food = g_player_food;
-    g_energy = g_base_energy;
-    
-    // HP regeneration when well fed (faster regeneration)
-    if (g_player_food > 40.0f && g_player.hp < 100) {
-        static float regen_timer = 0.0f;
-        regen_timer += dt;
-        // Regenerate 2 HP every 1.2 seconds (was 1 HP every 2s)
-        if (regen_timer >= 1.2f) {
-            regen_timer = 0.0f;
-            int regen_amount = (g_player_food > 75.0f) ? 3 : 2;  // More food = faster regen
-            g_player.hp = std::min(100, g_player.hp + regen_amount);
-        }
-    }
-    
-    // Update phase based on current conditions
-    update_phase();
-    
-    // Melt ice globally when temperature rises above freezing
-    static float melt_timer = 0.0f;
-    melt_timer += dt;
-    if (melt_timer >= 2.0f && g_temperature >= kTempThawing) {
-        melt_timer = 0.0f;
-        // Randomly melt some ice blocks
-        for (int i = 0; i < 10; ++i) {
-            int x = rng_next_u32() % world.w;
-            int y = rng_next_u32() % world.h;
-            if (world.get(x, y) == Block::Ice) {
-                world.set(x, y, Block::Water);
-                g_surface_dirty = true;
-            }
-        }
-    }
-}
+// update_modules() moved to modules_building.h/.cpp (verbatim) - this is the
+// items_particles/modules_building/inventory_crafting extraction stage.
+// modules_building.h (included at the top of this file) supplies its
+// declaration; update_game() (further below) calls it exactly as before.
 
 // ============= Renderizacao 3D (Estilo Minicraft) =============
 
@@ -3979,7 +2829,7 @@ static void render_cloud_layer(float cam_x, float cam_z, float day_phase, float 
     }
 }
 
-static void update_shooting_stars(float dt, float day_phase) {
+void update_shooting_stars(float dt, float day_phase) {
     for (auto& s : g_shooting_stars) {
         s.life -= dt;
         s.offset = vec3_add(s.offset, vec3_scale(s.vel, dt));

@@ -6,6 +6,8 @@
 #include "noise.h"        // lerp
 #include "world.h"        // World, g_world, surface_height_at, object_block_at, surface_block_at, get_block_height
 #include "blocks.h"       // Block, is_solid, is_ground_like, TerraPhase, kBlockTypeCount
+#include "modules_building.h"   // ConstructionJob, g_construction_queue, generate_base
+#include "inventory_crafting.h" // g_inventory, g_selected
 
 #include <algorithm>
 #include <array>
@@ -15,20 +17,22 @@
 #include <string>
 #include <vector>
 
-// ConstructionJob (g_construction_queue's element type) is defined in main.cpp (owned
-// by the not-yet-extracted modules_building stage). spawn_player_new_game (below) only
-// needs to clear the queue on new game, so rather than declaring
-// "extern std::vector<ConstructionJob> g_construction_queue;" here with just a forward
-// declaration of ConstructionJob (which would NOT be safe: std::vector<T>::clear() is
-// not among the operations the standard guarantees to work with an incomplete T - only
-// the default constructor, destructor, and move special members are), main.cpp exposes
-// a tiny clear_construction_queue() wrapper instead (defined where ConstructionJob is
-// complete).
-void clear_construction_queue();
+// ConstructionJob/generate_base/g_construction_queue now come from modules_building.h
+// (included above), and g_inventory/g_selected from inventory_crafting.h (also included
+// above) - both real headers now that the items_particles/modules_building/
+// inventory_crafting extraction stage exists. spawn_player_new_game (below) used to call
+// a clear_construction_queue() wrapper defined in main.cpp, needed back when this file
+// only had a forward declaration of the (then still main.cpp-owned) incomplete
+// ConstructionJob type, for which std::vector<T>::clear() is not among the operations the
+// standard guarantees to work with an incomplete T. Now that ConstructionJob is a
+// complete type here (via modules_building.h), spawn_player_new_game calls
+// g_construction_queue.clear() directly instead, and that wrapper is gone from main.cpp.
+// Similarly, this file's own raw "extern std::array<int, kBlockTypeCount> g_inventory;"/
+// "extern Block g_selected;" and "void generate_base(World& world);" forward declarations
+// are gone too, replaced by the real declarations from the headers above.
 
 // Globais de estado de jogo ainda definidas em main.cpp (dono continua sendo main.cpp
-// ate as fases futuras de extracao: game_state para os recursos de base/jogador,
-// modules_building para fila de construcao/alertas/unlocks/build slots/base_x/base_y).
+// ate as fases futuras de extracao: game_state para os recursos de base/jogador).
 // Todas perderam o "static" que tinham em main.cpp porque spawn_player_new_game/
 // respawn_player_at_base/spawn_player_at_base (abaixo) agora as leem/escrevem de outra
 // unidade de traducao - mesmo padrao de g_oxygen/g_water_res em textures.cpp e
@@ -50,8 +54,6 @@ extern int g_base_y;
 extern bool g_show_build_menu;
 extern int g_build_menu_selection;
 extern MiniMapRuntime g_minimap;
-extern std::array<int, kBlockTypeCount> g_inventory;
-extern Block g_selected;
 
 // Estas ja eram nao-static em main.cpp (extraidas/expostas em fases anteriores);
 // so precisamos da declaracao aqui tambem, mesmo padrao de g_physics_cfg em camera.cpp.
@@ -64,11 +66,6 @@ extern float g_co2_level;
 extern float g_atmosphere;
 extern TerraPhase g_phase;
 extern PhysicsConfig g_physics_cfg;
-
-// generate_base: definicao continua em main.cpp (dono e o futuro modules_building.cpp);
-// perdeu "static" la para que spawn_player_new_game (abaixo) possa chama-la desta
-// unidade de traducao.
-void generate_base(World& world);
 
 // ============= Player =============
 Player g_player;
@@ -208,7 +205,7 @@ static void spawn_player_new_game(World& world) {
     g_base_integrity = 100.0f;  // Base starts in perfect condition
     
     // Clear construction queue
-    clear_construction_queue();
+    g_construction_queue.clear();
     g_alerts.clear();
     
     // Sync legacy variables

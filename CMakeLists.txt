@@ -15,6 +15,9 @@ add_executable(terraformer WIN32
   src/world.cpp
   src/camera.cpp
   src/player_physics.cpp
+  src/items_particles.cpp
+  src/inventory_crafting.cpp
+  src/modules_building.cpp
 )
 
 if(MSVC)
