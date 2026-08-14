@@ -26,6 +26,7 @@ add_executable(terraformer WIN32
   src/lighting.cpp
   src/sky.cpp
   src/ui_hud.cpp
+  src/ui_menu.cpp
 )
 
 if(MSVC)

@@ -20,6 +20,7 @@
 #include "lighting.h"            // Light2D/g_lighting/compute_lightmap/sample_lightmap/etc. (lighting extraction stage)
 #include "sky.h"                 // SkyPalette/compute_sky_palette/render_alien_sky/update_shooting_stars (sky extraction stage)
 #include "ui_hud.h"              // render_hud (ui_hud extraction stage)
+#include "ui_menu.h"             // render_menus/update_menu_input (ui_menu extraction stage)
 
 // ===========================
 // TerraFormer 2D (prototype)
@@ -130,9 +131,11 @@ UnlockProgress g_unlocks;
 
 // ============= CONFIGURACOES DE ACESSIBILIDADE =============
 // GameSettings struct moved to game_state.h (verbatim); g_settings (the instance) stays
-// here since it's used throughout this file's settings-menu logic, not just by the
-// feedback subsystem extracted into game_state.cpp.
-static GameSettings g_settings;
+// owned here (not moved with the feedback subsystem into game_state.cpp), but it lost
+// "static": ui_menu.cpp's render_menus()/update_menu_input() (the ui_menu extraction
+// stage - Settings screen render + A/D value adjustment) now read/write it from another
+// translation unit - same pattern as g_terrain_cfg/g_base_cfg etc. above.
+GameSettings g_settings;
 
 // ============= FEEDBACK VISUAL =============
 // g_screen_flash_red/green, g_hotbar_bounce(+_slot), the CollectPopup struct +
@@ -151,9 +154,12 @@ int g_base_x = 0;
 int g_base_y = 0;
 bool g_show_build_menu = false;
 int g_build_menu_selection = 0;
-static int g_settings_selection = 0;  // 0=sensibilidade, 1=inverter Y, 2=brilho, 3=escala UI, 4=iluminacao, 5=sombras, 6=bloom, 7=vinheta, 8=voltar
-static int g_pause_selection = -1;     // -1=nenhum, 0=continuar, 1=salvar, 2=carregar, 3=config, 4=novo jogo
-static int g_menu_selection = -1;      // -1=nenhum, 0=novo jogo, 1=carregar, 2=sair
+// g_settings_selection/g_pause_selection/g_menu_selection lost "static" here: ui_menu.cpp's
+// render_menus() (button-hover highlighting) and update_menu_input() (click/keyboard
+// handling, the ui_menu extraction stage) read/write them from another translation unit now.
+int g_settings_selection = 0;  // 0=sensibilidade, 1=inverter Y, 2=brilho, 3=escala UI, 4=iluminacao, 5=sombras, 6=bloom, 7=vinheta, 8=voltar
+int g_pause_selection = -1;     // -1=nenhum, 0=continuar, 1=salvar, 2=carregar, 3=config, 4=novo jogo
+int g_menu_selection = -1;      // -1=nenhum, 0=novo jogo, 1=carregar, 2=sair
 
 // Posicao do mouse na tela. g_mouse_x/g_mouse_y/g_mouse_left_clicked lost "static" here:
 // ui_hud.cpp's render_hud() (extracted this stage - hotbar slot hit-testing, crosshair)
@@ -231,7 +237,10 @@ static std::string g_map_config_path = "map_config.json";
 static void build_physics_test_map(World& world);
 
 // ============= Gameplay State =============
-static bool g_quit = false;
+// g_quit lost "static" here: ui_menu.cpp's update_menu_input() (Sair/ESC-from-main-menu
+// handling, the ui_menu extraction stage) sets it from another translation unit now - the
+// WinMain message loop and WindowProc below (still in this file) keep reading/writing it too.
+bool g_quit = false;
 static const int WORLD_WIDTH = 512;
 static const int WORLD_HEIGHT = 256;
 static constexpr float TILE_PX = 16.0f;
@@ -1712,266 +1721,10 @@ static void render_world(HDC hdc, int win_w, int win_h) {
     }
     
     render_hud(win_w, win_h);
-    // Overlays - Menus estilo Minecraft
-    if (g_state == GameState::Paused || g_state == GameState::Menu) {
-        // Fundo escurecido
-        render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.0f, 0.0f, 0.0f, g_state == GameState::Paused ? 0.55f : 0.70f);
-        
-        // Funcao para desenhar botao estilo Minecraft
-        auto draw_mc_button = [&](float x, float y, float w, float h, const std::string& text, bool hovered, bool enabled = true) {
-            // Cores base do botao Minecraft
-            float bg_r = enabled ? 0.45f : 0.30f;
-            float bg_g = enabled ? 0.45f : 0.30f;
-            float bg_b = enabled ? 0.50f : 0.35f;
-            
-            if (hovered && enabled) {
-                bg_r = 0.55f; bg_g = 0.65f; bg_b = 0.85f;  // Highlight azul
-            }
-            
-            // Sombra (borda inferior/direita escura)
-            render_quad(x + 3.0f, y + 3.0f, w, h, 0.05f, 0.05f, 0.08f, 0.95f);
-            
-            // Corpo do botao
-            render_quad(x, y, w, h, bg_r * 0.7f, bg_g * 0.7f, bg_b * 0.7f, 0.98f);
-            
-            // Borda superior clara (3D effect)
-            render_quad(x, y, w, 3.0f, bg_r * 1.3f, bg_g * 1.3f, bg_b * 1.3f, 0.95f);
-            render_quad(x, y, 3.0f, h, bg_r * 1.3f, bg_g * 1.3f, bg_b * 1.3f, 0.95f);
-            
-            // Borda inferior escura
-            render_quad(x, y + h - 3.0f, w, 3.0f, bg_r * 0.4f, bg_g * 0.4f, bg_b * 0.4f, 0.95f);
-            render_quad(x + w - 3.0f, y, 3.0f, h, bg_r * 0.4f, bg_g * 0.4f, bg_b * 0.4f, 0.95f);
-            
-            // Interior do botao (gradiente sutil)
-            render_quad(x + 3.0f, y + 3.0f, w - 6.0f, h - 6.0f, bg_r, bg_g, bg_b, 0.98f);
-            
-            // Texto centralizado
-            float text_w = estimate_text_w_px(text);
-            float text_r = enabled ? 1.0f : 0.55f;
-            float text_g = enabled ? 1.0f : 0.55f;
-            float text_b = enabled ? 1.0f : 0.55f;
-            if (hovered && enabled) {
-                text_r = 1.0f; text_g = 1.0f; text_b = 0.65f;  // Texto amarelado quando hover
-            }
-            draw_text(x + (w - text_w) * 0.5f, y + h * 0.5f + 5.0f, text, text_r, text_g, text_b, 1.0f);
-        };
-        
-        // Verifica se mouse esta sobre um retangulo
-        auto mouse_in_rect = [&](float x, float y, float w, float h) -> bool {
-            return g_mouse_x >= x && g_mouse_x <= x + w && g_mouse_y >= y && g_mouse_y <= y + h;
-        };
-        
-        if (g_state == GameState::Paused) {
-            // === MENU DE PAUSA ESTILO MINECRAFT ===
-            float btn_w = 280.0f;
-            float btn_h = 40.0f;
-            float btn_gap = 8.0f;
-            float start_y = win_h * 0.22f;
-            float center_x = win_w * 0.5f - btn_w * 0.5f;
-            
-            // Titulo "Jogo Pausado"
-            std::string title = "Jogo Pausado";
-            float title_w = estimate_text_w_px(title);
-            draw_text(win_w * 0.5f - title_w * 0.5f, start_y, title, 1.0f, 1.0f, 1.0f, 1.0f);
-            
-            start_y += 50.0f;
-            
-            // Botoes do menu de pausa
-            struct PauseButton { std::string text; int id; };
-            PauseButton buttons[] = {
-                {"Continuar", 0},
-                {"Salvar Jogo", 1},
-                {"Carregar Jogo", 2},
-                {"Configuracoes", 3},
-                {"Novo Jogo", 4}
-            };
-            
-            g_pause_selection = -1;  // Reset selection
-            
-            for (int i = 0; i < 5; ++i) {
-                float by = start_y + i * (btn_h + btn_gap);
-                bool hovered = mouse_in_rect(center_x, by, btn_w, btn_h);
-                if (hovered) g_pause_selection = buttons[i].id;
-                draw_mc_button(center_x, by, btn_w, btn_h, buttons[i].text, hovered);
-            }
-            
-            // Separador
-            start_y += 5 * (btn_h + btn_gap) + 15.0f;
-            render_quad(center_x, start_y, btn_w, 2.0f, 0.5f, 0.5f, 0.55f, 0.6f);
-            
-            // Controles (texto menor)
-            start_y += 15.0f;
-            draw_text(center_x, start_y, "CONTROLES:", 0.75f, 0.80f, 0.90f, 0.90f);
-            start_y += 22.0f;
-            draw_text(center_x, start_y, "WASD - Mover", 0.65f, 0.65f, 0.70f, 0.85f);
-            start_y += 18.0f;
-            draw_text(center_x, start_y, "Espaco - Pular  |  Shift - Correr", 0.65f, 0.65f, 0.70f, 0.85f);
-            start_y += 18.0f;
-            draw_text(center_x, start_y, "Botao Direito - Rotacionar Camera", 0.65f, 0.65f, 0.70f, 0.85f);
-            start_y += 18.0f;
-            draw_text(center_x, start_y, "Scroll - Zoom  |  1-9 - Selecionar Item", 0.65f, 0.65f, 0.70f, 0.85f);
-            start_y += 18.0f;
-            draw_text(center_x, start_y, "Botao Esquerdo - Minerar/Construir", 0.65f, 0.65f, 0.70f, 0.85f);
-            
-        } else if (g_state == GameState::Menu) {
-            // === MENU PRINCIPAL ESTILO MINECRAFT ===
-            float btn_w = 320.0f;
-            float btn_h = 45.0f;
-            float btn_gap = 10.0f;
-            
-            // Logo/Titulo grande
-            std::string title = "TERRAFORMER";
-            float title_w = estimate_text_w_px(title);
-            // Sombra do titulo
-            draw_text(win_w * 0.5f - title_w * 0.5f + 3.0f, win_h * 0.18f + 3.0f, title, 0.15f, 0.15f, 0.15f, 0.9f);
-            // Titulo principal
-            draw_text(win_w * 0.5f - title_w * 0.5f, win_h * 0.18f, title, 0.95f, 0.85f, 0.25f, 1.0f);
-            
-            // Subtitulo
-            std::string subtitle = "Colonize. Construa. Terraforma.";
-            float sub_w = estimate_text_w_px(subtitle);
-            draw_text(win_w * 0.5f - sub_w * 0.5f, win_h * 0.18f + 35.0f, subtitle, 0.70f, 0.75f, 0.80f, 0.90f);
-            
-            float start_y = win_h * 0.38f;
-            float center_x = win_w * 0.5f - btn_w * 0.5f;
-            
-            // Botoes do menu principal
-            struct MenuButton { std::string text; int id; };
-            MenuButton buttons[] = {
-                {"Novo Jogo", 0},
-                {"Carregar Jogo", 1},
-                {"Sair", 2}
-            };
-            
-            g_menu_selection = -1;  // Reset selection
-            
-            for (int i = 0; i < 3; ++i) {
-                float by = start_y + i * (btn_h + btn_gap);
-                bool hovered = mouse_in_rect(center_x, by, btn_w, btn_h);
-                if (hovered) g_menu_selection = buttons[i].id;
-                draw_mc_button(center_x, by, btn_w, btn_h, buttons[i].text, hovered);
-            }
-            
-            // Versao no canto
-            draw_text(10.0f, win_h - 20.0f, "TerraFormer v1.0", 0.5f, 0.5f, 0.55f, 0.7f);
-        }
-    }
-    
-    // Death screen
-    if (g_state == GameState::Dead) {
-        render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.15f, 0.0f, 0.0f, 0.75f);
-        std::string title = "VOCE MORREU";
-        draw_text(win_w * 0.5f - estimate_text_w_px(title) * 0.5f, win_h * 0.35f, title, 0.95f, 0.25f, 0.25f, 0.98f);
-        draw_text(win_w * 0.5f - estimate_text_w_px(g_toast) * 0.5f, win_h * 0.35f + 40.0f, g_toast, 0.90f, 0.90f, 0.90f, 0.95f);
-        draw_text(win_w * 0.5f - 100.0f, win_h * 0.35f + 90.0f, "Enter - Novo Jogo", 0.90f, 0.90f, 0.90f, 0.95f);
-        draw_text(win_w * 0.5f - 100.0f, win_h * 0.35f + 115.0f, "Esc - Menu Principal", 0.90f, 0.90f, 0.90f, 0.95f);
-    }
-    
-    // Settings menu
-    if (g_state == GameState::Settings) {
-        render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.0f, 0.0f, 0.0f, 0.85f);
-        
-        float menu_w = 480.0f;
-        float menu_h = 520.0f;  // Aumentado para opcoes de iluminacao
-        float menu_x = win_w * 0.5f - menu_w * 0.5f;
-        float menu_y = win_h * 0.5f - menu_h * 0.5f;
-        
-        // Background panel
-        render_quad(menu_x, menu_y, menu_w, menu_h, 0.08f, 0.10f, 0.14f, 0.98f);
-        render_quad(menu_x, menu_y, menu_w, 4.0f, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
-        render_quad(menu_x, menu_y + menu_h - 4.0f, menu_w, 4.0f, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
-        render_quad(menu_x, menu_y, 4.0f, menu_h, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
-        render_quad(menu_x + menu_w - 4.0f, menu_y, 4.0f, menu_h, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
-        
-        std::string title = "CONFIGURACOES";
-        draw_text(win_w * 0.5f - estimate_text_w_px(title) * 0.5f, menu_y + 25.0f, title, 0.95f, 0.95f, 0.95f, 1.0f);
-        
-        float row_y = menu_y + 70.0f;
-        float row_h = 40.0f;
-        float label_x = menu_x + 30.0f;
-        float value_x = menu_x + 280.0f;
-        
-        // Opcao: Sensibilidade da Camera
-        bool sel0 = (g_settings_selection == 0);
-        if (sel0) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
-        draw_text(label_x, row_y + 5.0f, "Sensibilidade Camera", sel0 ? 1.0f : 0.8f, sel0 ? 1.0f : 0.8f, sel0 ? 1.0f : 0.8f, 1.0f);
-        char sens_buf[32];
-        snprintf(sens_buf, sizeof(sens_buf), "< %.2f >", g_settings.camera_sensitivity);
-        draw_text(value_x, row_y + 5.0f, sens_buf, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
-        row_y += row_h;
-        
-        // Opcao: Inverter Y
-        bool sel1 = (g_settings_selection == 1);
-        if (sel1) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
-        draw_text(label_x, row_y + 5.0f, "Inverter Eixo Y", sel1 ? 1.0f : 0.8f, sel1 ? 1.0f : 0.8f, sel1 ? 1.0f : 0.8f, 1.0f);
-        const char* invert_str = g_settings.invert_y ? "Sim" : "Nao";
-        draw_text(value_x, row_y + 5.0f, invert_str, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
-        row_y += row_h;
-        
-        // Opcao: Brilho
-        bool sel2 = (g_settings_selection == 2);
-        if (sel2) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
-        draw_text(label_x, row_y + 5.0f, "Brilho", sel2 ? 1.0f : 0.8f, sel2 ? 1.0f : 0.8f, sel2 ? 1.0f : 0.8f, 1.0f);
-        char bright_buf[32];
-        snprintf(bright_buf, sizeof(bright_buf), "< %.0f%% >", g_settings.brightness * 100.0f);
-        draw_text(value_x, row_y + 5.0f, bright_buf, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
-        row_y += row_h;
-        
-        // Opcao: Escala UI
-        bool sel3 = (g_settings_selection == 3);
-        if (sel3) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
-        draw_text(label_x, row_y + 5.0f, "Escala UI", sel3 ? 1.0f : 0.8f, sel3 ? 1.0f : 0.8f, sel3 ? 1.0f : 0.8f, 1.0f);
-        char scale_buf[32];
-        snprintf(scale_buf, sizeof(scale_buf), "< %.0f%% >", g_settings.ui_scale * 100.0f);
-        draw_text(value_x, row_y + 5.0f, scale_buf, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
-        row_y += row_h;
-        
-        // === OPCOES DE ILUMINACAO (RTX FAKE) ===
-        draw_text(label_x, row_y + 5.0f, "--- Iluminacao RTX ---", 0.9f, 0.75f, 0.3f, 0.9f);
-        row_y += row_h * 0.7f;
-        
-        // Opcao: Iluminacao Ativada
-        bool sel4 = (g_settings_selection == 4);
-        if (sel4) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
-        draw_text(label_x, row_y + 5.0f, "Iluminacao 2D", sel4 ? 1.0f : 0.8f, sel4 ? 1.0f : 0.8f, sel4 ? 1.0f : 0.8f, 1.0f);
-        const char* light_str = g_lighting.enabled ? "Ativada" : "Desativada";
-        draw_text(value_x, row_y + 5.0f, light_str, g_lighting.enabled ? 0.3f : 0.8f, g_lighting.enabled ? 0.9f : 0.4f, 0.3f, 1.0f);
-        row_y += row_h;
-        
-        // Opcao: Sombras
-        bool sel5 = (g_settings_selection == 5);
-        if (sel5) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
-        draw_text(label_x, row_y + 5.0f, "Sombras 2D", sel5 ? 1.0f : 0.8f, sel5 ? 1.0f : 0.8f, sel5 ? 1.0f : 0.8f, 1.0f);
-        const char* shadow_str = g_lighting.shadows_enabled ? "Ativadas" : "Desativadas";
-        draw_text(value_x, row_y + 5.0f, shadow_str, g_lighting.shadows_enabled ? 0.3f : 0.8f, g_lighting.shadows_enabled ? 0.9f : 0.4f, 0.3f, 1.0f);
-        row_y += row_h;
-        
-        // Opcao: Bloom
-        bool sel6 = (g_settings_selection == 6);
-        if (sel6) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
-        draw_text(label_x, row_y + 5.0f, "Bloom/Glow", sel6 ? 1.0f : 0.8f, sel6 ? 1.0f : 0.8f, sel6 ? 1.0f : 0.8f, 1.0f);
-        char bloom_buf[32];
-        snprintf(bloom_buf, sizeof(bloom_buf), "< %.0f%% >", g_lighting.bloom_intensity * 100.0f);
-        draw_text(value_x, row_y + 5.0f, bloom_buf, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
-        row_y += row_h;
-        
-        // Opcao: Vinheta
-        bool sel7 = (g_settings_selection == 7);
-        if (sel7) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
-        draw_text(label_x, row_y + 5.0f, "Vinheta", sel7 ? 1.0f : 0.8f, sel7 ? 1.0f : 0.8f, sel7 ? 1.0f : 0.8f, 1.0f);
-        char vignette_buf[32];
-        snprintf(vignette_buf, sizeof(vignette_buf), "< %.0f%% >", g_lighting.vignette_intensity * 100.0f);
-        draw_text(value_x, row_y + 5.0f, vignette_buf, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
-        row_y += row_h;
-        
-        // Opcao: Voltar
-        bool sel8 = (g_settings_selection == 8);
-        if (sel8) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
-        draw_text(label_x, row_y + 5.0f, "Voltar", sel8 ? 1.0f : 0.8f, sel8 ? 1.0f : 0.8f, sel8 ? 1.0f : 0.8f, 1.0f);
-        
-        // Instrucoes
-        draw_text(menu_x + 30.0f, menu_y + menu_h - 40.0f, "W/S: Navegar | A/D: Ajustar | Esc/Enter: Voltar | F3: Debug Lightmap", 0.6f, 0.65f, 0.70f, 0.9f);
-    }
+    // Overlays - Menus estilo Minecraft (Paused/Menu/Dead/Settings). Extracted verbatim to
+    // ui_menu.cpp's render_menus() - see ui_menu.h for details; the build menu (g_show_build_menu)
+    // and the victory/alerts/world-map overlays right after it stay inline here.
+    render_menus(win_w, win_h);
 
     if (g_victory) {
         render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.0f, 0.0f, 0.0f, 0.18f);
@@ -2379,255 +2132,12 @@ static void update_game(float dt, HWND hwnd) {
         }
     }
 
-    // State machine
-    if (g_state == GameState::Menu) {
-        // Clique do mouse nos botoes do menu principal
-        if (g_mouse_left_clicked && g_menu_selection >= 0) {
-            g_mouse_left_clicked = false;
-            switch (g_menu_selection) {
-                case 0:  // Novo Jogo
-                    delete g_world;
-                    g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)GetTickCount());
-                    spawn_player_new_game(*g_world);
-                    g_cam_pos = g_player.pos;
-                    g_day_time = kDayLength * 0.25f;
-                    g_modules.clear();
-                    g_particles.clear();
-                    g_shooting_stars.clear();
-                    g_construction_queue.clear();
-                    g_alerts.clear();
-                    g_build_slots.clear();
-                    g_collect_popups.clear();
-                    g_drops.clear();
-                    g_onboarding = OnboardingState();
-                    g_state = GameState::Playing;
-                    show_tip("WASD para mover, Espaco para pular, Botao direito para girar camera", g_onboarding.shown_first_move);
-                    return;
-                case 1:  // Carregar Jogo
-                    if (load_game(kSavePath)) {
-                        set_toast("Jogo carregado!");
-                        g_state = GameState::Playing;
-                    } else {
-                        set_toast("Nenhum save encontrado.");
-                    }
-                    return;
-                case 2:  // Sair
-                    g_quit = true;
-                    return;
-            }
-        }
-        
-        if (esc_pressed) {
-            g_quit = true;
-            return;
-        }
-        if (enter_pressed) {
-            delete g_world;
-            g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)GetTickCount());
-            spawn_player_new_game(*g_world);  // This sets O2, water, etc. to 100%
-            g_cam_pos = g_player.pos;
-            g_day_time = kDayLength * 0.25f;  // Start at morning
-            g_modules.clear();
-            g_particles.clear();
-            g_shooting_stars.clear();
-            g_construction_queue.clear();
-            g_alerts.clear();
-            g_build_slots.clear();
-            g_collect_popups.clear();
-            g_drops.clear();
-            
-            // Reset onboarding para novo jogo
-            g_onboarding = OnboardingState();
-            
-            g_state = GameState::Playing;
-            
-            // Dica inicial de onboarding
-            show_tip("WASD para mover, Espaco para pular, Botao direito para girar camera", g_onboarding.shown_first_move);
-            return;
-        }
-        if (l_pressed || f9_pressed) {
-            if (load_game(kSavePath)) {
-                set_toast("Jogo carregado!");
-                g_state = GameState::Playing;
-            } else {
-                set_toast("Nenhum save encontrado.");
-            }
-            return;
-        }
-        return;
-    }
-
-    if (g_state == GameState::Paused) {
-        // Clique do mouse nos botoes do menu de pausa
-        if (g_mouse_left_clicked && g_pause_selection >= 0) {
-            g_mouse_left_clicked = false;
-            switch (g_pause_selection) {
-                case 0:  // Continuar
-                    g_state = GameState::Playing;
-                    return;
-                case 1:  // Salvar Jogo
-                    if (save_game(kSavePath)) set_toast("Jogo salvo!");
-                    else set_toast("Falha ao salvar!");
-                    return;
-                case 2:  // Carregar Jogo
-                    if (load_game(kSavePath)) {
-                        set_toast("Jogo carregado!");
-                        g_state = GameState::Playing;
-                    } else {
-                        set_toast("Falha ao carregar!");
-                    }
-                    return;
-                case 3:  // Configuracoes
-                    g_state = GameState::Settings;
-                    g_settings_selection = 0;
-                    return;
-                case 4:  // Novo Jogo
-                    g_state = GameState::Menu;
-                    return;
-            }
-        }
-        
-        if (esc_pressed) {
-            g_state = GameState::Playing;
-            return;
-        }
-        if (q_pressed) {
-            g_state = GameState::Menu;
-            return;
-        }
-        // Tecla 'O' abre configuracoes
-        if (GetAsyncKeyState('O') & 0x8000) {
-            static bool o_was_pressed = false;
-            if (!o_was_pressed) {
-                g_state = GameState::Settings;
-                g_settings_selection = 0;
-                o_was_pressed = true;
-            }
-        } else {
-            static bool o_was_pressed = false;
-            o_was_pressed = false;
-        }
-        if (f5_pressed) {
-            if (save_game(kSavePath)) set_toast("Jogo salvo!");
-            else set_toast("Falha ao salvar!");
-            return;
-        }
-        if (f9_pressed) {
-            if (load_game(kSavePath)) {
-                set_toast("Jogo carregado!");
-                g_state = GameState::Playing;
-            } else {
-                set_toast("Falha ao carregar!");
-            }
-            return;
-        }
-        return;
-    }
-    
-    // Menu de configuracoes
-    if (g_state == GameState::Settings) {
-        static bool key_w_held = false;
-        static bool key_s_held = false;
-        static bool key_a_held = false;
-        static bool key_d_held = false;
-        
-        bool w_now = (GetAsyncKeyState('W') & 0x8000) != 0;
-        bool s_now = (GetAsyncKeyState('S') & 0x8000) != 0;
-        bool a_now = (GetAsyncKeyState('A') & 0x8000) != 0;
-        bool d_now = (GetAsyncKeyState('D') & 0x8000) != 0;
-        
-        // Navegar para cima
-        if (w_now && !key_w_held) {
-            g_settings_selection = (g_settings_selection - 1 + 9) % 9;
-        }
-        key_w_held = w_now;
-        
-        // Navegar para baixo
-        if (s_now && !key_s_held) {
-            g_settings_selection = (g_settings_selection + 1) % 9;
-        }
-        key_s_held = s_now;
-        
-        // F3 para debug lightmap
-        static bool f3_held = false;
-        bool f3_now = (GetAsyncKeyState(VK_F3) & 0x8000) != 0;
-        if (f3_now && !f3_held) {
-            g_debug_lightmap = !g_debug_lightmap;
-        }
-        f3_held = f3_now;
-        
-        // Ajustar valores
-        float delta = 0.0f;
-        if (a_now && !key_a_held) delta = -1.0f;
-        if (d_now && !key_d_held) delta = 1.0f;
-        key_a_held = a_now;
-        key_d_held = d_now;
-        
-        if (delta != 0.0f) {
-            switch (g_settings_selection) {
-                case 0: // Sensibilidade
-                    g_settings.camera_sensitivity = std::clamp(g_settings.camera_sensitivity + delta * 0.02f, 0.05f, 0.5f);
-                    g_camera.sensitivity = g_settings.camera_sensitivity;
-                    break;
-                case 1: // Inverter Y
-                    g_settings.invert_y = !g_settings.invert_y;
-                    break;
-                case 2: // Brilho
-                    g_settings.brightness = std::clamp(g_settings.brightness + delta * 0.1f, 0.5f, 1.5f);
-                    break;
-                case 3: // Escala UI
-                    g_settings.ui_scale = std::clamp(g_settings.ui_scale + delta * 0.1f, 0.75f, 1.5f);
-                    break;
-                case 4: // Iluminacao 2D
-                    g_lighting.enabled = !g_lighting.enabled;
-                    break;
-                case 5: // Sombras
-                    g_lighting.shadows_enabled = !g_lighting.shadows_enabled;
-                    break;
-                case 6: // Bloom
-                    g_lighting.bloom_intensity = std::clamp(g_lighting.bloom_intensity + delta * 0.1f, 0.0f, 1.0f);
-                    g_lighting.bloom_enabled = (g_lighting.bloom_intensity > 0.0f);
-                    break;
-                case 7: // Vinheta
-                    g_lighting.vignette_intensity = std::clamp(g_lighting.vignette_intensity + delta * 0.1f, 0.0f, 0.6f);
-                    break;
-                case 8: // Voltar
-                    break;
-            }
-        }
-        
-        // ESC ou Enter no "Voltar" fecha o menu
-        if (esc_pressed || (enter_pressed && g_settings_selection == 8)) {
-            g_state = GameState::Paused;
-            return;
-        }
-        return;
-    }
-    
-    if (g_state == GameState::Dead) {
-        // Death screen - wait for Enter to start new game
-        if (enter_pressed) {
-            delete g_world;
-            g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)GetTickCount());
-            spawn_player_new_game(*g_world);
-            g_cam_pos = g_player.pos;
-            g_day_time = kDayLength * 0.25f;
-            g_modules.clear();
-            g_particles.clear();
-            g_drops.clear();
-            g_construction_queue.clear();
-            g_alerts.clear();
-            g_build_slots.clear();
-            g_state = GameState::Playing;
-            set_toast("Novo jogo!");
-            return;
-        }
-        if (esc_pressed) {
-            g_state = GameState::Menu;
-            return;
-        }
-        return;
-    }
+    // State machine - Menu/Paused/Settings/Dead input handling. Extracted verbatim to
+    // ui_menu.cpp's update_menu_input() - see ui_menu.h for details; each original
+    // "return;" became "return true;" (this frame's input was fully consumed by a menu
+    // screen), with a final "return false;" added for the Playing state (no menu state
+    // matched - fall through to this file's own Playing-state input code below).
+    if (update_menu_input(dt, hwnd, esc_pressed, enter_pressed, f5_pressed, f9_pressed, l_pressed, q_pressed)) return;
 
     // Playing state
     
