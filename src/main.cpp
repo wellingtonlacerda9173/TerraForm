@@ -21,6 +21,7 @@
 #include "sky.h"                 // SkyPalette/compute_sky_palette/render_alien_sky/update_shooting_stars (sky extraction stage)
 #include "ui_hud.h"              // render_hud (ui_hud extraction stage)
 #include "ui_menu.h"             // render_menus/update_menu_input (ui_menu extraction stage)
+#include "building_interaction.h" // render_build_menu/update_build_menu_input/update_mining_and_placement (building_interaction extraction stage)
 
 // ===========================
 // TerraFormer 2D (prototype)
@@ -290,11 +291,15 @@ static float get_player_render_rotation() { return g_physics.render_rotation; }
 // and resets the selected block) now gets them from that header too, instead of its own
 // local extern declarations.
 
-static bool g_prev_lmb = false;
-static bool g_prev_rmb = false;
+// g_prev_lmb/g_prev_rmb/g_prev_e lost "static" here: building_interaction.cpp's
+// update_mining_and_placement() (the building_interaction extraction stage) needs external
+// linkage to read/write them from another translation unit - same pattern as
+// g_oxygen/g_water_res/etc. in textures.cpp.
+bool g_prev_lmb = false;
+bool g_prev_rmb = false;
 static bool g_prev_esc = false;
 static bool g_prev_enter = false;
-static bool g_prev_e = false;  // Tecla de interacao (top-down)
+bool g_prev_e = false;  // Tecla de interacao (top-down)
 static bool g_prev_f5 = false;
 static bool g_prev_f9 = false;
 static bool g_prev_l = false;
@@ -309,15 +314,21 @@ static bool g_prev_m = false;
 static bool g_prev_r = false;
 static bool g_prev_c = false;
 
-static float g_place_cd = 0.0f;
+// g_place_cd lost "static" here: building_interaction.cpp's update_mining_and_placement()
+// needs external linkage to read/write it from another translation unit - same pattern as
+// g_prev_lmb above.
+float g_place_cd = 0.0f;
 static float g_drown_accum = 0.0f;
 
-// Mining progress (estilo Minicraft/Minecraft: segurar para quebrar)
-static int g_mine_block_x = -1;
-static int g_mine_block_y = -1;
-static float g_mine_progress = 0.0f; // 0..1
-static int g_mine_hits = 0;
-static float g_mine_hit_timer = 0.0f;
+// Mining progress (estilo Minicraft/Minecraft: segurar para quebrar). All five lost
+// "static" here: building_interaction.cpp's update_mining_and_placement() needs external
+// linkage to read/write them from another translation unit - same pattern as g_prev_lmb
+// above.
+int g_mine_block_x = -1;
+int g_mine_block_y = -1;
+float g_mine_progress = 0.0f; // 0..1
+int g_mine_hits = 0;
+float g_mine_hit_timer = 0.0f;
 
 // g_has_target/g_target_x/g_target_y/g_target_in_range lost "static" here: ui_hud.cpp's
 // render_hud() (extracted this stage - target-info HUD line) needs external linkage to
@@ -327,11 +338,13 @@ int g_target_x = 0;
 int g_target_y = 0;
 bool g_target_in_range = false;
 
-// Target de colocacao (tile onde o RMB vai tentar colocar)
-static bool g_has_place_target = false;
-static int g_place_x = 0;
-static int g_place_y = 0;
-static bool g_place_in_range = false;
+// Target de colocacao (tile onde o RMB vai tentar colocar). All four lost "static" here:
+// building_interaction.cpp's update_mining_and_placement() needs external linkage to
+// read/write them from another translation unit - same pattern as g_prev_lmb above.
+bool g_has_place_target = false;
+int g_place_x = 0;
+int g_place_y = 0;
+bool g_place_in_range = false;
 
 // Particle/ItemDrop structs + g_particles/g_drops/g_target_drop moved to
 // items_particles.h/.cpp (verbatim) - this is the items_particles/modules_building/
@@ -1733,205 +1746,12 @@ static void render_world(HDC hdc, int win_w, int win_h) {
     }
     
     // ============= BUILD MENU =============
-    if (g_show_build_menu && g_state == GameState::Playing) {
-        float menu_w = 850.0f;
-        float menu_h = 650.0f;
-        float menu_x = win_w * 0.5f - menu_w * 0.5f;
-        float menu_y = win_h * 0.5f - menu_h * 0.5f;
-        
-        // Background
-        render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.0f, 0.0f, 0.0f, 0.70f);
-        render_quad(menu_x, menu_y, menu_w, menu_h, 0.05f, 0.07f, 0.10f, 0.98f);
-        
-        // Border
-        render_quad(menu_x, menu_y, menu_w, 3.0f, 0.30f, 0.55f, 0.85f, 1.0f);
-        render_quad(menu_x, menu_y + menu_h - 3.0f, menu_w, 3.0f, 0.30f, 0.55f, 0.85f, 1.0f);
-        render_quad(menu_x, menu_y, 3.0f, menu_h, 0.30f, 0.55f, 0.85f, 1.0f);
-        render_quad(menu_x + menu_w - 3.0f, menu_y, 3.0f, menu_h, 0.30f, 0.55f, 0.85f, 1.0f);
-        
-        // Title
-        std::string title = "MENU DE CONSTRUCAO";
-        draw_text(menu_x + menu_w * 0.5f - estimate_text_w_px(title) * 0.5f, menu_y + 25.0f, title, 0.95f, 0.95f, 0.95f, 1.0f);
-        draw_text(menu_x + menu_w * 0.5f - 150.0f, menu_y + 45.0f, "Tab/B: Fechar  |  W/S: Selecionar  |  Enter: Construir", 0.55f, 0.60f, 0.70f, 0.85f);
-        
-        // Module types available
-        Block module_types[] = {
-            Block::SolarPanel,
-            Block::EnergyGenerator,
-            Block::OxygenGenerator,
-            Block::WaterExtractor,
-            Block::Greenhouse,
-            Block::Workshop,
-            Block::CO2Factory,
-            Block::Habitat,
-            Block::TerraformerBeacon,
-        };
-        const int module_count = 9;
-        
-        // Clamp selection
-        if (g_build_menu_selection < 0) g_build_menu_selection = 0;
-        if (g_build_menu_selection >= module_count) g_build_menu_selection = module_count - 1;
-        
-        float list_x = menu_x + 15.0f;
-        float list_y = menu_y + 65.0f;
-        float row_h = 58.0f;
-        float list_w = menu_w - 250.0f;
-        
-        for (int i = 0; i < module_count; ++i) {
-            Block mtype = module_types[i];
-            ModuleStats stats = get_module_stats(mtype);
-            CraftCost cost = get_module_cost(mtype);
-            bool affordable = can_afford(cost);
-            bool selected = (i == g_build_menu_selection);
-            
-            // Check if under construction
-            bool building = false;
-            float build_progress = 0.0f;
-            for (const auto& job : g_construction_queue) {
-                if (job.active && job.module_type == mtype) {
-                    building = true;
-                    build_progress = 1.0f - (job.time_remaining / job.total_time);
-                    break;
-                }
-            }
-            
-            // Count how many of this module we have
-            int count = 0;
-            for (const auto& mod : g_modules) {
-                if (mod.type == mtype) count++;
-            }
-            
-            // Determine status
-            const char* status_str;
-            float stat_r, stat_g, stat_b;
-            if (building) {
-                status_str = "CONSTRUINDO";
-                stat_r = 0.95f; stat_g = 0.75f; stat_b = 0.20f;
-            } else if (affordable) {
-                status_str = "DISPONIVEL";
-                stat_r = 0.30f; stat_g = 0.90f; stat_b = 0.40f;
-            } else {
-                status_str = "BLOQUEADO";
-                stat_r = 0.80f; stat_g = 0.40f; stat_b = 0.35f;
-            }
-            
-            // Row background
-            float bg_alpha = selected ? 0.40f : 0.15f;
-            float bg_r = selected ? 0.12f : 0.08f;
-            float bg_g = selected ? 0.22f : 0.10f;
-            float bg_b = selected ? 0.38f : 0.15f;
-            render_quad(list_x, list_y, list_w, row_h - 3.0f, bg_r, bg_g, bg_b, bg_alpha);
-            
-            // Selection indicator
-            if (selected) {
-                render_quad(list_x, list_y, 4.0f, row_h - 3.0f, 0.35f, 0.75f, 0.95f, 1.0f);
-            }
-            
-            // Build progress bar if building
-            if (building) {
-                render_quad(list_x + 4.0f, list_y + row_h - 8.0f, (list_w - 8.0f) * build_progress, 4.0f, 0.30f, 0.80f, 0.50f, 0.90f);
-            }
-            
-            // Module name and count
-            float name_r = affordable ? 0.95f : 0.60f;
-            float name_g = affordable ? 0.95f : 0.60f;
-            float name_b = affordable ? 0.95f : 0.65f;
-            std::string name_str = std::string(stats.name);
-            if (count > 0) name_str += " [" + std::to_string(count) + " ativo]";
-            draw_text(list_x + 12.0f, list_y + 16.0f, name_str, name_r, name_g, name_b, 1.0f);
-            
-            // Description
-            draw_text(list_x + 12.0f, list_y + 32.0f, stats.description, 0.55f, 0.60f, 0.70f, 0.80f);
-            
-            // Production/Consumption info
-            std::string prod_str;
-            if (stats.energy_production > 0.0f) prod_str += "+" + std::to_string((int)stats.energy_production) + " Energia/min ";
-            if (stats.oxygen_production > 0.0f) prod_str += "+" + std::to_string((int)(stats.oxygen_production*10)/10.0f).substr(0,3) + " O2/min ";
-            if (stats.water_production > 0.0f) prod_str += "+" + std::to_string((int)(stats.water_production*10)/10.0f).substr(0,3) + " Agua/min ";
-            if (stats.food_production > 0.0f) prod_str += "+" + std::to_string((int)(stats.food_production*10)/10.0f).substr(0,3) + " Comida/min ";
-            if (stats.integrity_bonus > 0.0f) prod_str += "+" + std::to_string((int)stats.integrity_bonus) + " Reparo/min ";
-            if (prod_str.empty()) prod_str = "Terraformacao";
-            
-            std::string cons_str;
-            if (stats.energy_consumption > 0.0f) cons_str = "-" + std::to_string((int)(stats.energy_consumption*10)/10.0f).substr(0,3) + " Energia/min";
-            
-            draw_text(list_x + 220.0f, list_y + 16.0f, prod_str, 0.35f, 0.80f, 0.45f, 0.85f);
-            if (!cons_str.empty()) {
-                draw_text(list_x + 220.0f, list_y + 32.0f, cons_str, 0.85f, 0.55f, 0.35f, 0.80f);
-            }
-            
-            // Status
-            draw_text(list_x + list_w - 95.0f, list_y + 16.0f, status_str, stat_r, stat_g, stat_b, 0.95f);
-            
-            // Cost
-            std::string cost_str = module_cost_string(cost);
-            float cost_r = affordable ? 0.50f : 0.75f;
-            float cost_g = affordable ? 0.80f : 0.50f;
-            float cost_b = affordable ? 0.55f : 0.45f;
-            draw_text(list_x + 12.0f, list_y + 46.0f, cost_str, cost_r, cost_g, cost_b, 0.75f);
-            
-            // Construction time
-            std::string time_str = "Tempo: " + std::to_string((int)stats.construction_time) + "s";
-            draw_text(list_x + list_w - 95.0f, list_y + 32.0f, time_str, 0.60f, 0.65f, 0.70f, 0.75f);
-            
-            list_y += row_h;
-        }
-        
-        // === RIGHT SIDE: BASE STATUS ===
-        float status_x = menu_x + menu_w - 225.0f;
-        float status_y = menu_y + 65.0f;
-        
-        render_quad(status_x - 5.0f, status_y - 5.0f, 220.0f, 250.0f, 0.08f, 0.10f, 0.14f, 0.90f);
-        draw_text(status_x + 55.0f, status_y + 12.0f, "STATUS DA BASE", 0.85f, 0.90f, 0.95f, 0.95f);
-        status_y += 30.0f;
-        
-        // Base resources with detailed bars
-        auto draw_status_bar = [&](const char* label, float value, float max_val, float r, float g, float b) {
-            float pct = std::clamp(value / max_val, 0.0f, 1.0f);
-            render_quad(status_x, status_y, 200.0f, 18.0f, 0.12f, 0.12f, 0.18f, 0.85f);
-            render_quad(status_x + 1.0f, status_y + 1.0f, 198.0f * pct, 16.0f, r, g, b, 0.90f);
-            std::string txt = std::string(label) + ": " + std::to_string((int)value) + "/" + std::to_string((int)max_val);
-            draw_text(status_x + 5.0f, status_y + 13.0f, txt, 0.95f, 0.95f, 0.95f, 0.98f);
-            status_y += 24.0f;
-        };
-        
-        draw_status_bar("Energia", g_base_energy, kBaseEnergyMax, 0.95f, 0.80f, 0.20f);
-        draw_status_bar("Agua", g_base_water, kBaseWaterMax, 0.25f, 0.60f, 0.95f);
-        draw_status_bar("Oxigenio", g_base_oxygen, kBaseOxygenMax, 0.25f, 0.90f, 0.50f);
-        draw_status_bar("Comida", g_base_food, kBaseFoodMax, 0.85f, 0.60f, 0.25f);
-        
-        // Integrity bar
-        float int_r = g_base_integrity > 50.0f ? 0.30f : (g_base_integrity > 25.0f ? 0.90f : 0.95f);
-        float int_g = g_base_integrity > 50.0f ? 0.85f : (g_base_integrity > 25.0f ? 0.70f : 0.30f);
-        float int_b = g_base_integrity > 50.0f ? 0.40f : 0.20f;
-        draw_status_bar("Integridade", g_base_integrity, kBaseIntegrityMax, int_r, int_g, int_b);
-        
-        // Consumption info
-        status_y += 10.0f;
-        draw_text(status_x, status_y, "CONSUMO CONSTANTE:", 0.70f, 0.75f, 0.85f, 0.80f);
-        status_y += 18.0f;
-        draw_text(status_x, status_y, "-1 O2/min  -2 Energia/min  -1 Agua/min", 0.85f, 0.55f, 0.45f, 0.75f);
-        
-        // === BOTTOM: INVENTORY ===
-        float bottom_y = menu_y + menu_h - 90.0f;
-        render_quad(menu_x + 10.0f, bottom_y, menu_w - 20.0f, 80.0f, 0.08f, 0.10f, 0.14f, 0.90f);
-        draw_text(menu_x + 20.0f, bottom_y + 15.0f, "SEU INVENTARIO:", 0.80f, 0.85f, 0.95f, 0.92f);
-        
-        std::string res_line1 = 
-            "Pedra: " + std::to_string(g_inventory[(int)Block::Stone]) + 
-            "   Ferro: " + std::to_string(g_inventory[(int)Block::Iron]) + 
-            "   Cobre: " + std::to_string(g_inventory[(int)Block::Copper]) +
-            "   Gelo: " + std::to_string(g_inventory[(int)Block::Ice]);
-        std::string res_line2 = 
-            "Carvao: " + std::to_string(g_inventory[(int)Block::Coal]) + 
-            "   Cristal: " + std::to_string(g_inventory[(int)Block::Crystal]) +
-            "   Metal: " + std::to_string(g_inventory[(int)Block::Metal]) +
-            "   Organico: " + std::to_string(g_inventory[(int)Block::Organic]) +
-            "   Comp: " + std::to_string(g_inventory[(int)Block::Components]);
-        draw_text(menu_x + 20.0f, bottom_y + 38.0f, res_line1, 0.90f, 0.92f, 0.95f, 0.95f);
-        draw_text(menu_x + 20.0f, bottom_y + 58.0f, res_line2, 0.90f, 0.92f, 0.95f, 0.95f);
-    }
-    
+    // Extracted verbatim to building_interaction.cpp's render_build_menu() - see
+    // building_interaction.h for details. The guard that used to wrap this block
+    // ("if (g_show_build_menu && g_state == GameState::Playing)") now lives inside that
+    // function instead (same pattern as render_menus() above checking g_state internally).
+    render_build_menu(win_w, win_h);
+
     // ============= ALERTS DISPLAY =============
     if (!g_alerts.empty() && g_state == GameState::Playing && !g_show_build_menu) {
         float alert_y = 150.0f;
@@ -1960,7 +1780,11 @@ static void render_world(HDC hdc, int win_w, int win_h) {
 }
 
 // ============= Input State =============
-static bool key_down(int vk) {
+// key_down() lost "static" here: building_interaction.cpp's update_build_menu_input()/
+// update_mining_and_placement() (the building_interaction extraction stage) call it from
+// another translation unit now - same pattern as every other "lost static" function in
+// this codebase's extraction stages.
+bool key_down(int vk) {
     return (GetAsyncKeyState(vk) & 0x8000) != 0;
 }
 
@@ -2164,104 +1988,14 @@ static void update_game(float dt, HWND hwnd) {
         return;
     }
     
-    // Build menu navigation and actions
-    if (g_show_build_menu) {
-        static bool prev_w = false, prev_s = false, prev_enter = false;
-        bool w_now = key_down('W') || key_down(VK_UP);
-        bool s_now = key_down('S') || key_down(VK_DOWN);
-        bool enter_now = key_down(VK_RETURN);
-        
-        // Module types list (matches render order)
-        const Block module_types[] = {
-            Block::SolarPanel, Block::EnergyGenerator, Block::OxygenGenerator,
-            Block::WaterExtractor, Block::Greenhouse, Block::Workshop,
-            Block::CO2Factory, Block::Habitat, Block::TerraformerBeacon
-        };
-        const int module_count = 9;
-        
-        // Navigate up (W ou seta para cima)
-        if (w_now && !prev_w) {
-            g_build_menu_selection--;
-            if (g_build_menu_selection < 0) 
-                g_build_menu_selection = module_count - 1;
-            bounce_hotbar_slot(g_build_menu_selection);  // Feedback visual
-        }
-        // Navigate down (S ou seta para baixo)
-        if (s_now && !prev_s) {
-            g_build_menu_selection++;
-            if (g_build_menu_selection >= module_count) 
-                g_build_menu_selection = 0;
-            bounce_hotbar_slot(g_build_menu_selection);  // Feedback visual
-        }
-        // Build action with construction time
-        if (enter_now && !prev_enter && g_build_menu_selection >= 0 && 
-            g_build_menu_selection < module_count) {
-            
-            Block module_type = module_types[g_build_menu_selection];
-            CraftCost cost = get_module_cost(module_type);
-            
-            // Check if already under construction
-            bool already_building = false;
-            for (const auto& job : g_construction_queue) {
-                if (job.active && job.module_type == module_type) {
-                    already_building = true;
-                    break;
-                }
-            }
-            
-            if (already_building) {
-                show_error("Ja em construcao!");
-            } else if (can_afford(cost)) {
-                // Find a free slot for this module (or create at base)
-                int slot_index = -1;
-                
-                // Try to find an empty slot
-                for (int si = 0; si < (int)g_build_slots.size(); ++si) {
-                    if (g_build_slots[si].assigned_module == Block::Air) {
-                        slot_index = si;
-                        break;
-                    }
-                }
-                
-                // If no slot, create a new one near base
-                if (slot_index < 0) {
-                    // Find empty spot near base
-                    for (int dx = -30; dx <= 30; ++dx) {
-                        int tx = g_base_x + dx;
-                        if (tx < 0 || tx >= g_world->w) continue;
-                        int ty = g_base_y - 1;
-                        Block current = g_world->get(tx, ty);
-                        if (current == Block::Air || current == Block::BuildSlot) {
-                            BuildSlotInfo new_slot;
-                            new_slot.x = tx;
-                            new_slot.y = ty;
-                            new_slot.assigned_module = Block::Air;
-                            new_slot.label = "Auto";
-                            g_build_slots.push_back(new_slot);
-                            slot_index = (int)g_build_slots.size() - 1;
-                            break;
-                        }
-                    }
-                }
-                
-                if (slot_index >= 0) {
-                    // Start construction (will take time!)
-                    start_construction(module_type, slot_index);
-                    g_build_slots[slot_index].assigned_module = module_type;
-                } else {
-                    show_error("Sem espaco para construir!");
-                }
-            } else {
-                show_error("Recursos insuficientes!");
-            }
-        }
-        
-        prev_w = w_now;
-        prev_s = s_now;
-        prev_enter = enter_now;
-        return;  // Don't process other inputs while in menu
-    }
-    
+    // Build menu navigation and actions. Extracted verbatim to building_interaction.cpp's
+    // update_build_menu_input() - see building_interaction.h for details; the original
+    // unconditional "return;" (when g_show_build_menu was open) became "return true;", with
+    // "return false;" added for when the menu isn't open (fall through to the rest of this
+    // function) - same "return true consumes the frame" convention as
+    // update_menu_input() above.
+    if (update_build_menu_input()) return;
+
     // Return to base with H
     if (h_pressed) {
         spawn_player_at_base();
@@ -2437,466 +2171,14 @@ static void update_game(float dt, HWND hwnd) {
     g_cam_pos.x = approach(g_cam_pos.x, render_pos.x, cam_speed * dt * std::fabs(render_pos.x - g_cam_pos.x) + 0.5f * dt);
     g_cam_pos.y = approach(g_cam_pos.y, render_pos.y, cam_speed * dt * std::fabs(render_pos.y - g_cam_pos.y) + 0.5f * dt);
 
-    // Mouse targeting
-    POINT cursor;
-    GetCursorPos(&cursor);
-    ScreenToClient(hwnd, &cursor);
-
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    int win_w = rc.right - rc.left;
-    int win_h = rc.bottom - rc.top;
-
-    // Atualizar camera antes do targeting, para a mira (+) do centro bater com o raycast.
-    update_camera_for_frame();
-
-    // ============= TARGETING 3D (Estilo Minicraft) =============
-    // A mira (+) segue o mouse; fazemos raycast a partir da camera na direcao do mouse.
-    const float kReach = 4.2f; // alcance de interacao (minerar/colocar)
-
-    g_has_target = false;
-    g_target_in_range = false;
-    g_has_place_target = false;
-    g_place_in_range = false;
-    g_target_drop = -1;
-
-    auto placeable_tile = [&](Block b) -> bool {
-        if (is_base_structure(b)) return false;
-        if (is_module(b)) return false;
-        if (b == Block::Air || b == Block::Water) return true;
-        return !is_solid(b); // walkable pode ser substituido
-    };
-
-    auto blocks_raycast = [&](Block b) -> bool {
-        if (b == Block::Air) return false;
-        if (is_ground_like(b)) return true; // permite selecionar/minerar o chao corretamente
-        if (b == Block::Water) return true;
-        if (b == Block::Leaves) return true;
-        if (is_base_structure(b)) return true;
-        if (is_module(b)) return true;
-        return is_solid(b);
-    };
-
-    // Ray da camera (mira) - agora baseado na posicao do mouse
-    Vec3 ray_o = g_camera.position;
-    Vec3 ray_d = get_mouse_ray_direction(cursor.x, cursor.y, win_w, win_h);
-    float ray_max = std::clamp(g_camera.effective_distance + kReach + 3.0f, 8.0f, 55.0f);
-
-    // Primeiro: tentar mirar um drop (para facilitar coleta visual)
-    {
-        float best_t = std::numeric_limits<float>::infinity();
-        float best_perp2 = 0.0f;
-        for (int i = 0; i < (int)g_drops.size(); ++i) {
-            const ItemDrop& d = g_drops[(size_t)i];
-            Vec3 c = {d.x, d.y, d.z};
-            Vec3 rel = vec3_sub(c, ray_o);
-            float t = vec3_dot(rel, ray_d);
-            if (t < 0.2f || t > ray_max) continue;
-            Vec3 closest = vec3_add(ray_o, vec3_scale(ray_d, t));
-            Vec3 diff = vec3_sub(c, closest);
-            float perp2 = vec3_dot(diff, diff);
-
-            // "hitbox" da mira para o drop (um pouco generoso)
-            if (perp2 <= 0.26f * 0.26f) {
-                // E so considera se o drop nao estiver muito longe do player (alcance real)
-                float dx = d.x - g_player.pos.x;
-                float dz = d.z - g_player.pos.y;
-                float d2 = dx * dx + dz * dz;
-                if (d2 <= (kReach + 1.5f) * (kReach + 1.5f)) {
-                    if (t < best_t || (std::fabs(t - best_t) < 0.15f && perp2 < best_perp2)) {
-                        best_t = t;
-                        best_perp2 = perp2;
-                        g_target_drop = i;
-                    }
-                }
-            }
-        }
-    }
-
-    int last_place_x = -1;
-    int last_place_y = -1;
-
-    auto ray_aabb_hit = [&](const Vec3& bmin, const Vec3& bmax, float& out_t) -> bool {
-        float tmin = 0.0f;
-        float tmax = ray_max;
-        const float eps = 1e-6f;
-        auto axis_test = [&](float ro, float rd, float mn, float mx) -> bool {
-            if (std::fabs(rd) < eps) {
-                return ro >= mn && ro <= mx;
-            }
-            float inv = 1.0f / rd;
-            float t1 = (mn - ro) * inv;
-            float t2 = (mx - ro) * inv;
-            if (t1 > t2) std::swap(t1, t2);
-            tmin = std::max(tmin, t1);
-            tmax = std::min(tmax, t2);
-            return tmin <= tmax;
-        };
-
-        if (!axis_test(ray_o.x, ray_d.x, bmin.x, bmax.x)) return false;
-        if (!axis_test(ray_o.y, ray_d.y, bmin.y, bmax.y)) return false;
-        if (!axis_test(ray_o.z, ray_d.z, bmin.z, bmax.z)) return false;
-
-        out_t = (tmin >= 0.0f) ? tmin : tmax;
-        return out_t >= 0.0f && out_t <= ray_max;
-    };
-
-    auto ray_hits_tile = [&](int tx, int tz, Block b, float& out_t) -> bool {
-        float base_y = (float)g_world->height_at(tx, tz) * kHeightScale;
-        Vec3 bmin = {tile_min(tx), base_y - 0.05f, tile_min(tz)};
-        Vec3 bmax = {tile_max(tx), base_y + 1.05f, tile_max(tz)};
-
-        if (b == Block::Water) {
-            bmin.y = base_y - 0.30f;
-            bmax.y = base_y + 0.08f;
-        } else if (b == Block::Leaves) {
-            bmin.y = base_y + 0.45f;
-            bmax.y = base_y + 0.82f;
-        } else if (is_ground_like(b)) {
-            // Coluna baixa para permitir selecionar topo e paredes de buracos.
-            bmin.y = base_y - 1.05f;
-            bmax.y = base_y + 0.10f;
-        }
-        return ray_aabb_hit(bmin, bmax, out_t);
-    };
-
-    // Raymarch por tiles + teste preciso de intersecao com AABB do alvo.
-    int prev_tx = std::numeric_limits<int>::min();
-    int prev_tz = std::numeric_limits<int>::min();
-    for (float t = 0.20f; t <= ray_max; t += 0.05f) {
-        Vec3 p = vec3_add(ray_o, vec3_scale(ray_d, t));
-        int tx = world_to_tile(p.x);
-        int tz = world_to_tile(p.z);
-        if (tx == prev_tx && tz == prev_tz) continue;
-        prev_tx = tx;
-        prev_tz = tz;
-
-        if (!g_world->in_bounds(tx, tz)) break;
-
-        Block top_b = g_world->get(tx, tz);
-        Block b = (top_b == Block::Air) ? surface_block_at(*g_world, tx, tz) : top_b;
-
-        if (placeable_tile(top_b)) {
-            last_place_x = tx;
-            last_place_y = tz;
-        }
-
-        float hit_t = 0.0f;
-        if (!blocks_raycast(b) || !ray_hits_tile(tx, tz, b, hit_t)) continue;
-
-        g_target_x = tx;
-        g_target_y = tz;
-        g_has_target = true;
-
-        float dx = tile_center(g_target_x) - g_player.pos.x;
-        float dz = tile_center(g_target_y) - g_player.pos.y;
-        float dist = std::sqrt(dx * dx + dz * dz);
-        g_target_in_range = (dist <= kReach);
-
-        // Alvo de colocacao: tile atual se substituivel, ou o ultimo substituivel antes do hit.
-        if (placeable_tile(top_b)) {
-            g_place_x = tx;
-            g_place_y = tz;
-            g_has_place_target = true;
-            g_place_in_range = g_target_in_range;
-        } else if (last_place_x != -1) {
-            g_place_x = last_place_x;
-            g_place_y = last_place_y;
-            g_has_place_target = true;
-            float pdx = tile_center(g_place_x) - g_player.pos.x;
-            float pdz = tile_center(g_place_y) - g_player.pos.y;
-            g_place_in_range = (std::sqrt(pdx * pdx + pdz * pdz) <= kReach);
-        }
-
-        if (!g_onboarding.shown_first_mine && is_mineable(b)) {
-            show_tip("Segure clique esquerdo (ou E) para minerar blocos", g_onboarding.shown_first_mine);
-        }
-        break;
-    }
-
-    // Sem hit: mantem selecao apenas no ultimo tile substituivel realmente visto.
-    if (!g_has_target && last_place_x != -1) {
-        g_target_x = last_place_x;
-        g_target_y = last_place_y;
-        g_has_target = true;
-        float dx = tile_center(g_target_x) - g_player.pos.x;
-        float dz = tile_center(g_target_y) - g_player.pos.y;
-        g_target_in_range = (std::sqrt(dx * dx + dz * dz) <= kReach);
-
-        g_place_x = g_target_x;
-        g_place_y = g_target_y;
-        g_has_place_target = true;
-        g_place_in_range = g_target_in_range;
-    }
-
-    // Fallback: se nao houver tile de colocacao direto, tenta um adjacente do alvo atual.
-    if (!g_has_place_target && g_has_target) {
-        float best_d2 = std::numeric_limits<float>::infinity();
-        int best_x = -1;
-        int best_y = -1;
-        for (int oz = -1; oz <= 1; ++oz) {
-            for (int ox = -1; ox <= 1; ++ox) {
-                if (ox == 0 && oz == 0) continue;
-                int tx = g_target_x + ox;
-                int tz = g_target_y + oz;
-                if (!g_world->in_bounds(tx, tz)) continue;
-                Block nb = g_world->get(tx, tz);
-                if (!placeable_tile(nb)) continue;
-                float dx = tile_center(tx) - g_player.pos.x;
-                float dz = tile_center(tz) - g_player.pos.y;
-                float d2 = dx * dx + dz * dz;
-                if (d2 < best_d2) {
-                    best_d2 = d2;
-                    best_x = tx;
-                    best_y = tz;
-                }
-            }
-        }
-        if (best_x != -1) {
-            g_place_x = best_x;
-            g_place_y = best_y;
-            g_has_place_target = true;
-            g_place_in_range = (best_d2 <= kReach * kReach);
-        }
-    }
-
-    // Cooldowns (apenas colocacao)
-    if (g_place_cd > 0.0f) g_place_cd -= dt;
-
-    bool lmb = key_down(VK_LBUTTON);
-    bool rmb = key_down(VK_RBUTTON);
-
-    bool e_key = key_down('E');
-    g_prev_e = e_key;
-
-    // Mining com progresso (segurar LMB ou E)
-    bool mine_input = (lmb || e_key);
-    bool has_mine_target = g_has_target && g_target_in_range && g_world->in_bounds(g_target_x, g_target_y);
-    Block mine_block = has_mine_target ? g_world->get(g_target_x, g_target_y) : Block::Air;
-    if (has_mine_target && mine_block == Block::Air) {
-        mine_block = surface_block_at(*g_world, g_target_x, g_target_y);
-    }
-
-    // Feedback ao tentar minerar estrutura da base
-    if (mine_input && has_mine_target && is_base_structure(mine_block)) {
-        static float base_warn_cd = 0.0f;
-        base_warn_cd -= dt;
-        if (base_warn_cd <= 0.0f) {
-            show_error("Nao pode destruir estruturas da base!");
-            base_warn_cd = 1.0f;
-        }
-    }
-
-    bool mine_ok = mine_input && has_mine_target && is_mineable(mine_block);
-    if (mine_ok && is_ground_like(mine_block)) {
-        int16_t h = g_world->height_at(g_target_x, g_target_y);
-        if (h <= 0) mine_ok = false; // bedrock local: evita mineracao infinita
-    }
-    static float mining_particle_timer = 0.0f;
-    if (mine_ok) {
-        g_player.is_mining = true;
-        g_player.mine_anim = std::max(g_player.mine_anim - dt * 7.5f, 0.0f);
-
-        // Virar na direcao do alvo
-        float dx = tile_center(g_target_x) - g_player.pos.x;
-        float dz = tile_center(g_target_y) - g_player.pos.y;
-        g_player.target_rotation = std::atan2(-dx, -dz) * (180.0f / kPi);
-        if (g_player.target_rotation < 0.0f) g_player.target_rotation += 360.0f;
-
-        // Se mudou de bloco alvo, resetar progresso/hits.
-        if (g_target_x != g_mine_block_x || g_target_y != g_mine_block_y) {
-            g_mine_block_x = g_target_x;
-            g_mine_block_y = g_target_y;
-            g_mine_progress = 0.0f;
-            g_mine_hits = 0;
-            g_mine_hit_timer = 0.0f;
-        }
-
-        int req_hits = std::max(1, block_hits_required(mine_block));
-        float stage = clamp01(g_terraform / 100.0f);
-        float speed_mult = lerp(g_mining_cfg.early_game_speed_mult, g_mining_cfg.late_game_speed_mult, stage);
-        speed_mult = std::max(0.25f, speed_mult);
-        float hit_interval = std::max(g_mining_cfg.hit_interval_min, g_mining_cfg.hit_interval / speed_mult);
-
-        g_mine_hit_timer -= dt;
-        if (g_mine_hit_timer <= 0.0f) {
-            g_mine_hit_timer = hit_interval;
-            g_mine_hits = std::min(req_hits, g_mine_hits + 1);
-            g_mine_progress = (float)g_mine_hits / (float)req_hits;
-
-            // Impacto visivel por hit.
-            g_player.mine_anim = std::max(g_player.mine_anim, g_player_visual_cfg.mine_impact_amp);
-            g_screen_flash_green = std::max(g_screen_flash_green, 0.07f);
-            Beep(880, 1);
-
-            // Particulas por golpe.
-            for (int i = 0; i < 4; ++i) {
-                Particle p;
-                p.pos.x = tile_center(g_target_x) + (rand() % 100 - 50) / 100.0f * 0.42f;
-                p.pos.y = tile_center(g_target_y) + (rand() % 100 - 50) / 100.0f * 0.42f;
-                p.vel.x = (rand() % 100 - 50) / 45.0f;
-                p.vel.y = (rand() % 100 - 50) / 45.0f - 1.2f;
-                p.life = 0.22f + (rand() % 16) / 100.0f;
-                float br, bg, bb, ba;
-                block_color(mine_block, g_target_y, g_world->h, br, bg, bb, ba);
-                p.r = br * 0.85f + 0.15f;
-                p.g = bg * 0.85f + 0.15f;
-                p.b = bb * 0.85f + 0.15f;
-                p.a = 0.95f;
-                g_particles.push_back(p);
-            }
-        }
-
-        // Particulas de mineracao (feedback visual constante)
-        mining_particle_timer += dt;
-        if (mining_particle_timer >= 0.08f) {
-            mining_particle_timer = 0.0f;
-            if (mine_block != Block::Air) {
-                for (int i = 0; i < 2; ++i) {
-                    Particle p;
-                    p.pos.x = tile_center(g_target_x) + (rand() % 100 - 50) / 100.0f * 0.4f;
-                    p.pos.y = tile_center(g_target_y) + (rand() % 100 - 50) / 100.0f * 0.4f;
-                    p.vel.x = (rand() % 100 - 50) / 50.0f;
-                    p.vel.y = (rand() % 100 - 50) / 50.0f - 1.0f;
-                    p.life = 0.3f + (rand() % 20) / 100.0f;
-                    float br, bg, bb, ba;
-                    block_color(mine_block, g_target_y, g_world->h, br, bg, bb, ba);
-                    p.r = br * 0.9f + 0.1f;
-                    p.g = bg * 0.9f + 0.1f;
-                    p.b = bb * 0.9f + 0.1f;
-                    p.a = 0.9f;
-                    g_particles.push_back(p);
-                }
-            }
-        }
-
-        // Quebrar bloco ao completar progresso
-        if (g_mine_hits >= req_hits || g_mine_progress >= 0.999f) {
-            Block b = mine_block;
-            spawn_block_particles(b, tile_center(g_target_x), tile_center(g_target_y), g_world->h);
-
-            // Para blocos de terreno, remover 1 bloco "inteiro" em altura de mundo.
-            // Como o heightmap usa kHeightScale, convertemos 1.0 mundo -> unidades do heightmap.
-            if (is_ground_like(b)) {
-                constexpr float kWorldBlockHeight = 1.0f;
-                int dig_units = std::max(1, (int)std::lround(kWorldBlockHeight / std::max(0.01f, kHeightScale)));
-                int16_t h = g_world->height_at(g_target_x, g_target_y);
-                int nh = std::max(0, (int)h - dig_units);
-                g_world->set_height(g_target_x, g_target_y, (int16_t)nh);
-
-                // Mantem material de solo (ground-like) para permitir mineracao sequencial.
-                Block prev_ground = g_world->get_ground(g_target_x, g_target_y);
-                Block next_ground = Block::Dirt;
-                if (prev_ground == Block::Sand) next_ground = Block::Sand;
-                else if (prev_ground == Block::Snow || prev_ground == Block::Ice) next_ground = Block::Ice;
-                g_world->set_ground(g_target_x, g_target_y, next_ground);
-                g_world->set(g_target_x, g_target_y, next_ground);
-            } else {
-                g_world->set(g_target_x, g_target_y, Block::Air);
-            }
-
-            g_surface_dirty = true;
-
-            if (is_module(b)) {
-                refund_cost(module_cost(b));
-                g_modules.erase(std::remove_if(g_modules.begin(), g_modules.end(),
-                    [](const Module& m) { return m.x == g_target_x && m.y == g_target_y; }), g_modules.end());
-            } else {
-                Block drop = drop_item_for_block(b);
-                float sy = (float)g_world->height_at(g_target_x, g_target_y) * kHeightScale + drop_spawn_y_for_block(b);
-                spawn_item_drop(drop, tile_center(g_target_x), tile_center(g_target_y), sy);
-            }
-
-            // Reset apos quebrar
-            g_mine_progress = 0.0f;
-            g_mine_block_x = -1;
-            g_mine_block_y = -1;
-            g_mine_hits = 0;
-            g_mine_hit_timer = 0.0f;
-            mining_particle_timer = 0.0f;
-        }
-    } else {
-        g_player.is_mining = false;
-        g_player.mine_anim = std::max(g_player.mine_anim - dt * 8.0f, 0.0f);
-        mining_particle_timer = 0.0f;
-        g_mine_progress = 0.0f;
-        g_mine_block_x = -1;
-        g_mine_block_y = -1;
-        g_mine_hits = 0;
-        g_mine_hit_timer = 0.0f;
-    }
-
-    g_prev_lmb = lmb;
-
-    // Placing (RMB)
-    auto placeable_tile_for_place = [&](Block b) -> bool {
-        if (is_base_structure(b)) return false;
-        if (is_module(b)) return false;
-        if (b == Block::Air || b == Block::Water) return true;
-        return !is_solid(b); // chao/walkable pode ser substituido
-    };
-
-    if (rmb && !g_prev_rmb && g_has_place_target && g_place_in_range && g_place_cd <= 0.0f) {
-        Block cur = g_world->get(g_place_x, g_place_y);
-        if (placeable_tile_for_place(cur)) {
-            // Check player collision
-            float pl = g_player.pos.x - g_player.w * 0.5f;
-            float pr = g_player.pos.x + g_player.w * 0.5f;
-            float pt = g_player.pos.y - g_player.h * 0.5f;
-            float pb = g_player.pos.y + g_player.h * 0.5f;
-            float tl = tile_min(g_place_x);
-            float tr = tile_max(g_place_x);
-            float tf = tile_min(g_place_y);
-            float tb = tile_max(g_place_y);
-            bool overlaps_player = !(tr <= pl || tl >= pr || tb <= pt || tf >= pb);
-
-            if (!overlaps_player) {
-                if (is_module(g_selected)) {
-                    // Check if module is unlocked first
-                    if (!is_unlocked(g_selected)) {
-                        set_toast("Modulo nao desbloqueado! Colete mais recursos.");
-                    } else {
-                        CraftCost cost = module_cost(g_selected);
-                        if (can_afford(cost)) {
-                            spend_cost(cost);
-                            g_world->set(g_place_x, g_place_y, g_selected);
-                            g_modules.push_back(Module{g_place_x, g_place_y, g_selected, 0.0f});
-                            g_surface_dirty = true;
-                            g_place_cd = 0.25f;
-                            
-                            // Special messages for certain modules
-                            if (g_selected == Block::CO2Factory) {
-                                set_toast("Fabrica de CO2 colocada! Aquecendo o planeta...", 3.0f);
-                            } else if (g_selected == Block::TerraformerBeacon) {
-                                show_success("Terraformador ativo! (Requer fase de Degelo)");
-                            }
-                        } else {
-                            show_error("Recursos insuficientes!");
-                        }
-                    }
-                } else if (g_inventory[(int)g_selected] > 0) {
-                    g_inventory[(int)g_selected]--;
-                    g_world->set(g_place_x, g_place_y, g_selected);
-                    g_surface_dirty = true;
-                    g_place_cd = 0.12f;
-                }
-            }
-        }
-    }
-    g_prev_rmb = rmb;
-
-    // Atualizar drops e coletar por proximidade
-    update_item_drops(dt);
-
-    // Update particles
-    for (auto& p : g_particles) {
-        p.vel.y += 15.0f * dt;
-        p.pos.x += p.vel.x * dt;
-        p.pos.y += p.vel.y * dt;
-        p.life -= dt;
-    }
-    g_particles.erase(std::remove_if(g_particles.begin(), g_particles.end(),
-        [](const Particle& p) { return p.life <= 0.0f; }), g_particles.end());
+    // Mouse targeting + mining/placement raycast/actions + item pickup + particle
+    // simulation. Extracted verbatim to building_interaction.cpp's
+    // update_mining_and_placement() - see building_interaction.h for details. The five
+    // local [&]-capturing lambdas that used to live in this block (placeable_tile/
+    // blocks_raycast/ray_aabb_hit/ray_hits_tile/placeable_tile_for_place) are now named,
+    // explicit-parameter functions there instead - the highest-value mechanical change of
+    // this extraction stage, per the refactor plan.
+    update_mining_and_placement(dt, hwnd);
 }
 
 // ============= Window Procedure =============
