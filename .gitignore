@@ -10,6 +10,7 @@
 *.lib
 *.tlog/
 *.log
+/build_log.txt
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake

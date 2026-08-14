@@ -6,6 +6,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Win32 + OpenGL (no external deps)
 add_executable(terraformer WIN32
   src/main.cpp
+  src/math_core.cpp
+  src/noise.cpp
+  src/blocks.cpp
+  src/textures.cpp
+  src/config_io.cpp
+  src/game_state.cpp
+  src/world.cpp
+  src/camera.cpp
+  src/player_physics.cpp
 )
 
 if(MSVC)

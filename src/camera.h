@@ -1,0 +1,92 @@
+#pragma once
+
+#include "math_core.h"
+
+#include <array>
+#include <cstdint>
+#include <string>
+
+// ============= Camera 3D (Terceira Pessoa) =============
+// Extracted verbatim from main.cpp (original lines ~204-546 and ~648-825). Camera3D /
+// CameraMode / CameraDebugRay plus the update/collision/visibility functions that operate
+// on the single g_camera instance.
+//
+// Player/physics (g_physics, g_player) are NOT part of this extraction — that is the next
+// stage of the plan. update_camera_for_frame() still needs the player's interpolated
+// render position, so it keeps calling get_player_render_pos()/get_player_render_y(),
+// declared at the bottom of this header; their definitions stay in main.cpp (they lost
+// "static" there since they are now called from two translation units — they already had
+// other main.cpp call sites besides the camera code, so this was needed regardless of the
+// camera split).
+struct Camera3D {
+    Vec3 position;      // Posicao calculada da camera
+    Vec3 target;        // Alvo (jogador)
+    Vec3 up = {0.0f, 1.0f, 0.0f}; // Vetor up
+
+    // Camera em terceira pessoa com horizonte visivel (menos "top-down")
+    float distance = 4.8f;      // Distancia do jogador
+    float yaw = 180.0f;         // Rotacao horizontal (graus)
+    float pitch = 18.0f;        // Rotacao vertical (mais baixa para ver o horizonte)
+    float min_pitch = 8.0f;
+    float max_pitch = 88.0f;
+    float min_distance = 2.2f;
+    float max_distance = 90.0f;
+    float sensitivity = 0.18f;  // Sensibilidade mais suave
+    float smooth_speed = 6.0f;  // Suavizacao do seguimento
+
+    // Distancia efetiva (apos colisao)
+    float effective_distance = 4.8f;
+};
+
+enum class CameraMode : uint8_t {
+    Open = 0,
+    SemiClosed,
+    Cave,
+    Emergency,
+};
+
+struct CameraDebugRay {
+    Vec3 from = {0.0f, 0.0f, 0.0f};
+    Vec3 to = {0.0f, 0.0f, 0.0f};
+    bool blocked = false;
+};
+
+// O unico Camera3D do jogo. Definido (nao-static) em camera.cpp; main.cpp continua
+// acessando g_camera diretamente (save/load de config, input de mouse/scroll, HUD de
+// debug, skybox etc.) atraves desta declaracao extern.
+extern Camera3D g_camera;
+
+// Estado adaptativo do modo de camera (Open/SemiClosed/Cave/Emergency) e do HUD de debug
+// associado. Definidos em camera.cpp; alguns campos (g_camera_mode, g_camera_mode_reason,
+// g_camera_obstruction, g_camera_enclosed, g_camera_hidden_time, g_camera_debug_rays,
+// g_camera_debug_ray_count) ainda sao lidos por main.cpp fora do modulo de camera (HUD de
+// debug em F3 e desenho dos raios de debug), por isso precisam de linkage externo.
+extern CameraMode g_camera_mode;
+extern std::string g_camera_mode_reason;
+extern float g_camera_obstruction;
+extern float g_camera_enclosed;
+extern float g_camera_hidden_time;
+extern std::array<CameraDebugRay, 96> g_camera_debug_rays;
+extern int g_camera_debug_ray_count;
+
+const char* camera_mode_name(CameraMode mode);
+void reset_camera_near_player(bool reset_angles);
+
+// Aplicar matriz de view (gluLookAt manual) / projecao perspectiva manual.
+void apply_look_at();
+void apply_perspective(float fov_degrees, float aspect, float near_plane, float far_plane);
+
+// Calcular direcao do ray a partir da posicao do mouse na tela (usado para mineracao/build).
+Vec3 get_mouse_ray_direction(int mouse_x, int mouse_y, int win_w, int win_h);
+
+// Alpha de fade de blocos que ocluem a camera (usado pelo renderer para tornar
+// transparentes os blocos entre a camera e o jogador).
+float camera_occluder_alpha_for_tile(int tx, int tz);
+
+void check_camera_collision();
+void update_camera_for_frame();
+
+// Definidas em main.cpp (leem g_physics, cuja extracao para player_physics.h/.cpp e uma
+// fase posterior do plano); camera.cpp so precisa chama-las.
+Vec2 get_player_render_pos();
+float get_player_render_y();
