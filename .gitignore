@@ -1,6 +1,7 @@
 # Build output (CMake / MSVC)
 /Build/
 /build/
+/BuildAgent/
 /out/
 *.obj
 *.pdb
