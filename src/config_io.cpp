@@ -1,8 +1,9 @@
 #include "config_io.h"
 
-#include "platform.h"   // DWORD/GetFileAttributesA/INVALID_FILE_ATTRIBUTES/FILE_ATTRIBUTE_DIRECTORY, <fstream>, <algorithm>, <cstdlib>
-
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
 
 // Globais de estado ainda definidas em main.cpp (extracao completa para game_state e/ou
 // camera e' uma fase posterior do plano de refatoracao). Removido o "static" delas em
@@ -24,9 +25,8 @@ extern std::string g_player_visual_config_path;
 // Extracted verbatim from main.cpp (original lines ~3063-3084).
 
 bool file_exists(const std::string& path) {
-    DWORD attr = GetFileAttributesA(path.c_str());
-    if (attr == INVALID_FILE_ATTRIBUTES) return false;
-    return (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    std::error_code ec;
+    return std::filesystem::is_regular_file(path, ec) && !ec;
 }
 
 bool parse_json_number(const std::string& text, const char* key, float& out_value) {
