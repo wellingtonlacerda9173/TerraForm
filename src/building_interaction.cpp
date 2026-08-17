@@ -15,6 +15,7 @@
 #include "inventory_crafting.h"
 #include "render_primitives.h"
 #include "font.h"
+#include "objectives.h"         // notify_module_built
 
 #include <algorithm>
 #include <cmath>
@@ -238,6 +239,7 @@ void render_build_menu(int win_w, int win_h) {
         Block mtype = module_types[i];
         ModuleStats stats = get_module_stats(mtype);
         CraftCost cost = get_module_cost(mtype);
+        bool unlocked = is_unlocked(mtype);
         bool affordable = can_afford(cost);
         bool selected = (i == g_build_menu_selection);
 
@@ -258,18 +260,25 @@ void render_build_menu(int win_w, int win_h) {
             if (mod.type == mtype) count++;
         }
 
-        // Determine status
+        // Determine status - unlock gating checked before affordability, since a locked
+        // module that's technically affordable would otherwise misleadingly read
+        // "DISPONIVEL" here while still being rejected at actual placement time
+        // (building_interaction.cpp's is_unlocked() check further up this same file).
         const char* status_str;
         float stat_r, stat_g, stat_b;
+        bool buildable = unlocked && affordable;
         if (building) {
             status_str = "CONSTRUINDO";
             stat_r = 0.95f; stat_g = 0.75f; stat_b = 0.20f;
+        } else if (!unlocked) {
+            status_str = "BLOQUEADO";
+            stat_r = 0.80f; stat_g = 0.40f; stat_b = 0.35f;
         } else if (affordable) {
             status_str = "DISPONIVEL";
             stat_r = 0.30f; stat_g = 0.90f; stat_b = 0.40f;
         } else {
-            status_str = "BLOQUEADO";
-            stat_r = 0.80f; stat_g = 0.40f; stat_b = 0.35f;
+            status_str = "SEM RECURSOS";
+            stat_r = 0.85f; stat_g = 0.60f; stat_b = 0.25f;
         }
 
         // Row background
@@ -290,9 +299,9 @@ void render_build_menu(int win_w, int win_h) {
         }
 
         // Module name and count
-        float name_r = affordable ? 0.95f : 0.60f;
-        float name_g = affordable ? 0.95f : 0.60f;
-        float name_b = affordable ? 0.95f : 0.65f;
+        float name_r = buildable ? 0.95f : 0.60f;
+        float name_g = buildable ? 0.95f : 0.60f;
+        float name_b = buildable ? 0.95f : 0.65f;
         std::string name_str = std::string(stats.name);
         if (count > 0) name_str += " [" + std::to_string(count) + " ativo]";
         draw_text(list_x + 12.0f, list_y + 16.0f, name_str, name_r, name_g, name_b, 1.0f);
@@ -320,11 +329,12 @@ void render_build_menu(int win_w, int win_h) {
         // Status
         draw_text(list_x + list_w - 95.0f, list_y + 16.0f, status_str, stat_r, stat_g, stat_b, 0.95f);
 
-        // Cost
-        std::string cost_str = module_cost_string(cost);
-        float cost_r = affordable ? 0.50f : 0.75f;
-        float cost_g = affordable ? 0.80f : 0.50f;
-        float cost_b = affordable ? 0.55f : 0.45f;
+        // Cost - or, while locked, the unlock requirement progress instead (matches the
+        // hotbar's existing unlock_progress_string() display, see ui_hud.cpp).
+        std::string cost_str = unlocked ? module_cost_string(cost) : ("Desbloqueio: " + unlock_progress_string(mtype));
+        float cost_r = buildable ? 0.50f : 0.75f;
+        float cost_g = buildable ? 0.80f : 0.50f;
+        float cost_b = buildable ? 0.55f : 0.45f;
         draw_text(list_x + 12.0f, list_y + 46.0f, cost_str, cost_r, cost_g, cost_b, 0.75f);
 
         // Construction time
@@ -857,6 +867,7 @@ void update_mining_and_placement(float dt, HWND hwnd) {
                             spend_cost(cost);
                             g_world->set(g_place_x, g_place_y, g_selected);
                             g_modules.push_back(Module{g_place_x, g_place_y, g_selected, 0.0f});
+                            notify_module_built(g_selected);
                             g_surface_dirty = true;
                             g_place_cd = 0.25f;
 

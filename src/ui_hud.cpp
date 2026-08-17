@@ -15,6 +15,7 @@
 #include "render_primitives.h"
 #include "lighting.h"
 #include "camera.h"
+#include "objectives.h"
 
 #include <algorithm>
 #include <cmath>
@@ -103,7 +104,20 @@ static const float kColorDanger[]        = {0.95f, 0.35f, 0.20f, 1.0f};  // Verm
 static const float kColorSuccess[]       = {0.30f, 0.95f, 0.45f, 1.0f};  // Verde brilhante - sucesso
 static const float kColorWarning[]       = {0.95f, 0.75f, 0.20f, 1.0f};  // Amarelo-laranja - aviso
 static const float kColorTextPrimary[]   = {0.95f, 0.95f, 0.95f, 1.0f};  // Texto principal
+static const float kColorTextSecondary[] = {0.70f, 0.70f, 0.75f, 0.90f}; // Texto secundario
 static const float kColorSelection[]     = {0.35f, 0.65f, 0.95f, 0.80f}; // Selecao azul
+
+// Painel padrao do HUD: sombra suave + corpo com cantos arredondados (azul-acinzentado
+// escuro em vez de preto chapado) + realce superior sutil (efeito "vidro"/holografico) +
+// linha de destaque colorida na base, no tema do painel. Substitui os antigos fundos
+// retangulares chapados (render_quad preto translucido) usados por cada painel do HUD -
+// visual mais suave/polido, mantendo a mesma area/posicao de cada painel.
+static void draw_hud_panel(float x, float y, float w, float h, float accent_r, float accent_g, float accent_b) {
+    render_rounded_rect(x + 3.0f, y + 4.0f, w, h, 8.0f, 0.0f, 0.0f, 0.0f, 0.30f);
+    render_rounded_rect(x, y, w, h, 8.0f, 0.06f, 0.08f, 0.12f, 0.68f);
+    render_quad(x + 4.0f, y + 2.0f, w - 8.0f, h * 0.30f, 1.0f, 1.0f, 1.0f, 0.05f);
+    render_quad(x + 4.0f, y + h - 2.0f, w - 8.0f, 2.0f, accent_r, accent_g, accent_b, 0.45f);
+}
 
 void render_hud(int win_w, int win_h) {
     // === MUDAR PARA PROJECAO 2D PARA HUD ===
@@ -278,10 +292,46 @@ void render_hud(int win_w, int win_h) {
             char buf[64];
             snprintf(buf, sizeof(buf), "%d%% - %s", (int)(pct * 100.0f), phase_name.c_str());
             float tw = estimate_text_w_px(buf);
-            draw_text(progress_x + progress_w * 0.5f - tw * 0.5f, progress_y + 15.0f, buf, 
+            draw_text(progress_x + progress_w * 0.5f - tw * 0.5f, progress_y + 15.0f, buf,
                 kColorTextPrimary[0], kColorTextPrimary[1], kColorTextPrimary[2], 0.95f);
         }
-        
+
+        // ============= OBJETIVO ATUAL (logo abaixo da barra de terraformacao) =============
+        {
+            std::string line1, line2;
+            bool all_done = objectives_all_complete();
+            if (all_done) {
+                line1 = "Marte Terraformado!";
+                line2 = "Todos os objetivos concluidos - bom trabalho, colono.";
+            } else {
+                int idx = objectives_current_index();
+                const ObjectiveDef& def = objective_def(idx);
+                char hdr[96];
+                snprintf(hdr, sizeof(hdr), "Objetivo %d/%d: %s", idx + 1, kObjectiveCount, def.title);
+                line1 = hdr;
+                line2 = def.hint;
+                if (def.related_module != Block::Air && !is_unlocked(def.related_module)) {
+                    line2 += "  (" + unlock_progress_string(def.related_module) + ")";
+                }
+            }
+            float tw1 = estimate_text_w_px(line1);
+            float tw2 = estimate_text_w_px(line2);
+            float box_w = std::max(tw1, tw2) + 30.0f;
+            float box_h = 38.0f;
+            float box_x = win_w * 0.5f - box_w * 0.5f;
+            float box_y = 46.0f;
+
+            float border_r = all_done ? 0.30f : 0.35f;
+            float border_g = all_done ? 0.90f : 0.75f;
+            float border_b = all_done ? 0.50f : 0.55f;
+            draw_hud_panel(box_x, box_y, box_w, box_h, border_r, border_g, border_b);
+
+            draw_text(win_w * 0.5f - tw1 * 0.5f, box_y + 15.0f, line1,
+                kColorSuccess[0], kColorSuccess[1], kColorSuccess[2], 0.95f);
+            draw_text(win_w * 0.5f - tw2 * 0.5f, box_y + 31.0f, line2,
+                kColorTextSecondary[0], kColorTextSecondary[1], kColorTextSecondary[2], 0.90f);
+        }
+
         float x0 = 20.0f;
         float y0 = 50.0f;  // Ajustado para dar espaco para a barra de terraformacao
         float bar_w = 180.0f;
@@ -296,7 +346,7 @@ void render_hud(int win_w, int win_h) {
         
         // === FUNDO TRANSPARENTE DO HUD ESQUERDO ===
         float left_panel_h = bar_gap * 10 + 100.0f;  // Altura aproximada do painel esquerdo (incluindo jetpack)
-        render_quad(x0 - 10.0f, y0 - 10.0f, bar_w + 20.0f, left_panel_h, 0.0f, 0.0f, 0.0f, 0.30f);
+        draw_hud_panel(x0 - 10.0f, y0 - 10.0f, bar_w + 20.0f, left_panel_h, 0.35f, 0.65f, 0.90f);
         
         // === LEFT PANEL: SUIT STATUS (Player) ===
         draw_text(x0, y0 - 2.0f, "TRAJE", 0.70f, 0.75f, 0.85f, 0.85f);
@@ -393,7 +443,7 @@ void render_hud(int win_w, int win_h) {
         
         // === FUNDO TRANSPARENTE DO HUD DIREITO ===
         float right_panel_h = bar_gap * 6 + 90.0f;  // Altura aproximada do painel direito
-        render_quad(rx0 - 10.0f, ry0 - 10.0f, bar_w + 20.0f, right_panel_h, 0.0f, 0.0f, 0.0f, 0.30f);
+        draw_hud_panel(rx0 - 10.0f, ry0 - 10.0f, bar_w + 20.0f, right_panel_h, 0.90f, 0.65f, 0.35f);
         
         // Phase indicator
         float phase_colors[5][3] = {
@@ -605,7 +655,7 @@ void render_hud(int win_w, int win_h) {
         float hy = win_h - slot_size - 12.0f;
         
         // Fundo da hotbar (painel escuro)
-        render_quad(hx - 8.0f, hy - 8.0f, total_w + 16.0f, slot_size + 16.0f, 0.08f, 0.08f, 0.10f, 0.75f);
+        draw_hud_panel(hx - 8.0f, hy - 8.0f, total_w + 16.0f, slot_size + 16.0f, 0.55f, 0.60f, 0.75f);
         
         // Funcao auxiliar para verificar se mouse esta sobre um slot
         auto mouse_over_slot = [&](float sx, float sy, float ss) -> bool {

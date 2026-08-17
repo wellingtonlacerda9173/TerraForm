@@ -24,6 +24,7 @@
 #include "building_interaction.h" // render_build_menu/update_build_menu_input/update_mining_and_placement (building_interaction extraction stage)
 #include "input.h"                // key_down/key_pressed (input extraction stage)
 #include "win32_platform.h"       // WindowProc/WinMain (win32_platform extraction stage - see there for why it declares nothing)
+#include "objectives.h"           // objectives_victory_celebration_remaining (player objectives feature)
 
 // ===========================
 // TerraFormer 2D (prototype)
@@ -1721,10 +1722,19 @@ void render_world(HDC hdc, int win_w, int win_h) {
     // and the victory/alerts/world-map overlays right after it stay inline here.
     render_menus(win_w, win_h);
 
-    if (g_victory) {
-        render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.0f, 0.0f, 0.0f, 0.18f);
-        std::string t2 = "Terraformacao Completa!";
-        draw_text(win_w * 0.5f - estimate_text_w_px(t2) * 0.5f, win_h * 0.20f, t2, 0.85f, 0.95f, 0.85f, 0.98f);
+    // One-time victory celebration (fires when objectives.cpp completes the final
+    // milestone) instead of the old permanent "if (g_victory)" overlay that never went
+    // away once triggered - the objectives HUD panel (ui_hud.cpp) now shows a permanent
+    // "Marte Terraformado!" line once all milestones are done, so this overlay only needs
+    // to cover the initial celebratory moment.
+    float victory_celebration = objectives_victory_celebration_remaining();
+    if (victory_celebration > 0.0f) {
+        float alpha = std::min(1.0f, victory_celebration / 2.0f);  // fade out over the last 2s
+        render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.0f, 0.0f, 0.0f, 0.30f * alpha);
+        std::string t1 = "Marte Terraformado!";
+        std::string t2 = "Parabens, colono - voce completou todos os objetivos.";
+        draw_text(win_w * 0.5f - estimate_text_w_px(t1) * 0.5f, win_h * 0.20f, t1, 0.85f, 0.95f, 0.85f, 0.98f * alpha);
+        draw_text(win_w * 0.5f - estimate_text_w_px(t2) * 0.5f, win_h * 0.20f + 26.0f, t2, 0.80f, 0.90f, 0.80f, 0.90f * alpha);
     }
     
     // ============= BUILD MENU =============
@@ -2131,9 +2141,13 @@ void update_game(float dt, HWND hwnd) {
             set_toast("SEM AGUA! Dano em " + std::to_string(seconds_left) + "s!", 2.5f);
         } else if (g_oxygen < 15.0f && g_oxygen > 0.0f) {
             set_toast("Aviso: Oxigenio baixo! Construa Gerador de O2.");
-            // Onboarding: dica para voltar a base
+            // Onboarding: dica para voltar a base (uma vez), depois dica para se tornar
+            // independente da base (shown_low_oxygen - antes uma flag morta, nunca
+            // disparada; agora tem um gatilho proprio distinto do de shown_return_to_base).
             if (!g_onboarding.shown_return_to_base) {
                 show_tip("H para voltar a base e recarregar oxigenio", g_onboarding.shown_return_to_base);
+            } else if (!g_onboarding.shown_low_oxygen) {
+                show_tip("Construa um Gerador de Oxigenio para nao depender so da base", g_onboarding.shown_low_oxygen);
             }
         } else if (g_water_res < 15.0f && g_water_res > 0.0f) {
             set_toast("Aviso: Agua baixa! Construa Extrator de Agua.");

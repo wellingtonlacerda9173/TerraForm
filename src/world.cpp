@@ -497,11 +497,10 @@ void recompute_terraform_score(World& world) {
     float base = grass * 60.0f + trees * 20.0f + water * 20.0f;
     float env = 0.4f + 0.6f * (0.5f * clamp01(g_oxygen / 100.0f) + 0.5f * clamp01(g_water_res / 100.0f));
     g_terraform = std::clamp(base * env, 0.0f, 100.0f);
-
-    if (!g_victory && g_terraform >= 80.0f) {
-        g_victory = true;
-        set_toast("Vitoria! Terraformacao >= 80%");
-    }
+    // Victory is no longer decided here: objectives.cpp's final milestone
+    // (TerraformComplete, checked via g_phase == TerraPhase::Terraformed) is now the
+    // single source of truth for g_victory, replacing this and update_phase()'s old
+    // redundant, differently-thresholded check below.
 }
 
 void update_phase() {
@@ -518,11 +517,11 @@ void update_phase() {
         g_phase = TerraPhase::Frozen;
     }
 
-    // Check for victory
-    if (!g_victory && g_temperature >= kTempTarget && g_atmosphere >= 80.0f && g_terraform >= 70.0f) {
+    // Terraformed is the final phase; objectives.cpp watches for it and sets g_victory
+    // once (see recompute_terraform_score()'s comment above for why this replaced the
+    // old inline g_victory/toast side effects here).
+    if (g_temperature >= kTempTarget && g_atmosphere >= 80.0f && g_terraform >= 70.0f) {
         g_phase = TerraPhase::Terraformed;
-        g_victory = true;
-        set_toast("VITORIA! Planeta terraformado com sucesso!");
     }
 
     // Notify phase changes

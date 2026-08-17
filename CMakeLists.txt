@@ -30,6 +30,7 @@ add_executable(terraformer WIN32
   src/building_interaction.cpp
   src/input.cpp
   src/win32_platform.cpp
+  src/objectives.cpp
 )
 
 if(MSVC)

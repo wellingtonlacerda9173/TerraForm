@@ -7,6 +7,7 @@
 #include "math_core.h"          // clamp01, compute_daylight
 #include "noise.h"              // lerp
 #include "player_physics.h"     // g_player
+#include "objectives.h"         // notify_module_built, update_objectives
 
 #include <algorithm>
 #include <cmath>
@@ -258,14 +259,11 @@ void generate_base(World& world) {
         if (world.in_bounds(dx0, dy0 - 3)) world.set(dx0, dy0 - 3, Block::Antenna);
     }
 
-    // === MODULO INICIAL (painel solar) ===
-    if (!g_build_slots.empty()) {
-        int sx = g_build_slots[0].x;
-        int sy = g_build_slots[0].y;
-        world.set(sx, sy, Block::SolarPanel);
-        g_modules.push_back(Module{sx, sy, Block::SolarPanel, 0.0f});
-        g_build_slots[0].assigned_module = Block::SolarPanel;
-    }
+    // O slot de construcao inicial fica vazio de proposito (nao ha mais um painel solar
+    // pre-construido aqui): o primeiro objetivo do jogador ("Gerar energia") e justamente
+    // construir seu primeiro modulo de energia com a propria mao, no slot que ja existe
+    // perto da base - um tutorial natural para a mecanica de construcao, em vez de o
+    // jogador so descobrir a mecanica minerando/recolocando um modulo que ja existia.
 
     world.rebuild_surface_cache();
 }
@@ -559,6 +557,7 @@ void update_modules(World& world, float dt) {
                     mod.y = slot.y;
                     mod.t = 0.0f;
                     g_modules.push_back(mod);
+                    notify_module_built(job.module_type);
                 }
 
                 ModuleStats stats = get_module_stats(job.module_type);
@@ -915,6 +914,7 @@ void update_modules(World& world, float dt) {
 
     // Update phase based on current conditions
     update_phase();
+    update_objectives(dt);
 
     // Melt ice globally when temperature rises above freezing
     static float melt_timer = 0.0f;

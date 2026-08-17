@@ -8,6 +8,7 @@
 #include "blocks.h"       // Block, is_solid, is_ground_like, TerraPhase, kBlockTypeCount
 #include "modules_building.h"   // ConstructionJob, g_construction_queue, generate_base
 #include "inventory_crafting.h" // g_inventory, g_selected
+#include "objectives.h"         // reset_objectives (new game)
 
 #include <algorithm>
 #include <array>
@@ -176,6 +177,11 @@ void respawn_player_at_base(const char* death_reason) {
 }
 
 void spawn_player_new_game(World& world) {
+    // Precisa vir antes de generate_base(): reset_objectives() zera g_ever_built, e
+    // generate_base() ja marca o painel solar inicial como construido (notify_module_built)
+    // - se a ordem fosse invertida, esse reset apagaria a marcacao que acabou de ser feita.
+    reset_objectives();
+
     // Generate base first (sets g_base_x and g_base_y)
     generate_base(world);
     
@@ -198,7 +204,7 @@ void spawn_player_new_game(World& world) {
     g_player_food = 100.0f;
     
     // Base storage - start with some resources from the rocket
-    g_base_energy = 100.0f;   // Solar panel starts generating
+    g_base_energy = 100.0f;   // Reserva inicial do foguete - da tempo de construir o primeiro painel solar
     g_base_water = 30.0f;     // Small water reserve
     g_base_oxygen = 50.0f;    // Some O2 from the rocket
     g_base_food = 40.0f;      // Emergency rations
@@ -234,7 +240,7 @@ void spawn_player_new_game(World& world) {
     
     g_show_build_menu = false;
     g_build_menu_selection = 0;
-    
+
     // Inicializar minimapa e fog of war
     size_t map_size = (size_t)world.w * (size_t)world.h;
     g_minimap.explored.clear();

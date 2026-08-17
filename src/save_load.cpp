@@ -10,6 +10,7 @@
 #include "modules_building.h"    // rebuild_modules_from_world
 #include "game_state.h"          // UnlockProgress (type)
 #include "config_types.h"        // MiniMapRuntime, MapWaypoint (types of g_minimap)
+#include "objectives.h"          // kObjectiveCount, objectives_ever_built_snapshot/objectives_current_index/objectives_load_state
 
 #include <algorithm>
 #include <array>
@@ -67,7 +68,7 @@ bool save_game(const char* path) {
     if (!f) return false;
 
     const char magic[4] = {'T', 'F', '3', 'D'};  // Atualizado para 3D
-    uint32_t version = 6;  // Version 6 - adds fog of war + waypoints
+    uint32_t version = 7;  // Version 7 - adds player objectives progress
     uint32_t w = (uint32_t)g_world->w;
     uint32_t h = (uint32_t)g_world->h;
     uint32_t seed = (uint32_t)g_world->seed;
@@ -164,6 +165,18 @@ bool save_game(const char* path) {
         if (label_len > 0) {
             f.write(wp.label.c_str(), (std::streamsize)label_len);
         }
+    }
+
+    // Version 7: Objetivos do jogador (marco atual + quais modulos ja foram construidos
+    // ao menos uma vez).
+    uint32_t obj_current = (uint32_t)objectives_current_index();
+    f.write((const char*)&obj_current, sizeof(obj_current));
+    const bool* ever_built = objectives_ever_built_snapshot();
+    uint32_t ever_built_count = (uint32_t)kBlockTypeCount;
+    f.write((const char*)&ever_built_count, sizeof(ever_built_count));
+    for (uint32_t i = 0; i < ever_built_count; ++i) {
+        uint8_t v = ever_built[i] ? 1 : 0;
+        f.write((const char*)&v, sizeof(v));
     }
 
     return (bool)f;
@@ -444,6 +457,40 @@ bool load_game(const char* path) {
 
     g_minimap.dirty_full = true;
     g_minimap.world_map_open = false;
+
+    // Version 7: objetivos do jogador. Saves antigos (sem essa secao) recomecam a trilha
+    // do zero - nao ha como reconstruir retroativamente "quais marcos ja tinham sido
+    // atingidos", entao um reset limpo (current=0, nada construido ainda) e o fallback
+    // mais honesto, ao inves de tentar adivinhar.
+    if (version >= 7) {
+        uint32_t obj_current = 0;
+        f.read((char*)&obj_current, sizeof(obj_current));
+        uint32_t ever_built_count = 0;
+        f.read((char*)&ever_built_count, sizeof(ever_built_count));
+        bool ever_built_arr[kBlockTypeCount] = {};
+        int n = std::min((int)ever_built_count, (int)kBlockTypeCount);
+        for (int i = 0; i < n; ++i) {
+            uint8_t v = 0;
+            f.read((char*)&v, sizeof(v));
+            ever_built_arr[i] = (v != 0);
+        }
+        // Skip over any extra entries beyond kBlockTypeCount (forward-compat: a future
+        // build with more block types would write more than we can read here).
+        for (uint32_t i = (uint32_t)n; i < ever_built_count; ++i) {
+            uint8_t v = 0;
+            f.read((char*)&v, sizeof(v));
+        }
+        if (f) {
+            objectives_load_state((int)obj_current, ever_built_arr, n);
+        } else {
+            reset_objectives();
+        }
+    } else {
+        reset_objectives();
+    }
+    if (objectives_all_complete()) {
+        g_victory = true;
+    }
 
     return true;
 }
