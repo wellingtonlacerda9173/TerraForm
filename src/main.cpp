@@ -1,4 +1,4 @@
-#include "platform.h"
+#include "raylib_platform.h"
 #include "math_core.h"
 #include "noise.h"
 #include "blocks.h"
@@ -681,8 +681,25 @@ void add_alert(const std::string& msg, float r, float g, float b, float duration
 // extraction stage) - render_cube_3d_tex below stays here for now (not part of that stage's
 // list) and keeps calling render_cube_outline_3d via render_primitives.h's declaration.
 
+// Fog manual (raylib/rlgl nao tem equivalente a glFog*): aplica o lerp de cor em direcao a
+// g_frame_fog (setado uma vez por frame em render_world(), ver render_primitives.h) baseado
+// na distancia da camera ate a posicao dada - mesma formula do fog GL_LINEAR original,
+// usada como aproximacao por quad/cubo (nao por vertice) ja que essas funcoes locais so
+// recebem uma posicao "centro" por chamada. Compartilhada por render_cube_3d_tex/
+// render_plane_3d/render_plane_3d_tex abaixo.
+static void apply_frame_fog_local(float wx, float wy, float wz, float& r, float& g, float& b) {
+    if (!g_frame_fog.enabled) return;
+    float dx = wx - g_camera.position.x, dy = wy - g_camera.position.y, dz = wz - g_camera.position.z;
+    float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    float span = std::max(0.0001f, g_frame_fog.end - g_frame_fog.start);
+    float factor = clamp01((g_frame_fog.end - dist) / span);
+    r = lerp(g_frame_fog.r, r, factor);
+    g = lerp(g_frame_fog.g, g, factor);
+    b = lerp(g_frame_fog.b, b, factor);
+}
+
 // Renderizar cubo 3D texturizado (tile do atlas) com iluminacao fake por face.
-// Requer GL_TEXTURE_2D habilitado e g_tex_atlas bindado.
+// Requer rlSetTexture(g_tex_atlas) ativo (equivalente ao antigo glBindTexture).
 static void render_cube_3d_tex(float x, float y, float z, float size, Tile top, Tile side, Tile bottom,
                                float tint_r, float tint_g, float tint_b, float a = 1.0f, bool outline = false) {
     float half = size * 0.5f;
@@ -696,51 +713,55 @@ static void render_cube_3d_tex(float x, float y, float z, float size, Tile top, 
     UvRect uv_side = atlas_uv(side);
     UvRect uv_bottom = atlas_uv(bottom);
 
-    glBegin(GL_QUADS);
+    // Fog manual (rlgl nao tem glFog*): aplicado uma vez usando o centro do cubo como
+    // aproximacao de distancia (ver render_primitives.h's FrameFogParams).
+    apply_frame_fog_local(x, y, z, tint_r, tint_g, tint_b);
+
+    rlBegin(RL_QUADS);
 
     // Top (Y+)
-    glColor4f(tint_r * top_shade, tint_g * top_shade, tint_b * top_shade, a);
-    glTexCoord2f(uv_top.u0, uv_top.v1); glVertex3f(x - half, y + half, z - half);
-    glTexCoord2f(uv_top.u1, uv_top.v1); glVertex3f(x + half, y + half, z - half);
-    glTexCoord2f(uv_top.u1, uv_top.v0); glVertex3f(x + half, y + half, z + half);
-    glTexCoord2f(uv_top.u0, uv_top.v0); glVertex3f(x - half, y + half, z + half);
+    rlColor4f(tint_r * top_shade, tint_g * top_shade, tint_b * top_shade, a);
+    rlTexCoord2f(uv_top.u0, uv_top.v1); rlVertex3f(x - half, y + half, z - half);
+    rlTexCoord2f(uv_top.u1, uv_top.v1); rlVertex3f(x + half, y + half, z - half);
+    rlTexCoord2f(uv_top.u1, uv_top.v0); rlVertex3f(x + half, y + half, z + half);
+    rlTexCoord2f(uv_top.u0, uv_top.v0); rlVertex3f(x - half, y + half, z + half);
 
     // Bottom (Y-)
-    glColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
-    glTexCoord2f(uv_bottom.u0, uv_bottom.v0); glVertex3f(x - half, y - half, z + half);
-    glTexCoord2f(uv_bottom.u1, uv_bottom.v0); glVertex3f(x + half, y - half, z + half);
-    glTexCoord2f(uv_bottom.u1, uv_bottom.v1); glVertex3f(x + half, y - half, z - half);
-    glTexCoord2f(uv_bottom.u0, uv_bottom.v1); glVertex3f(x - half, y - half, z - half);
+    rlColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
+    rlTexCoord2f(uv_bottom.u0, uv_bottom.v0); rlVertex3f(x - half, y - half, z + half);
+    rlTexCoord2f(uv_bottom.u1, uv_bottom.v0); rlVertex3f(x + half, y - half, z + half);
+    rlTexCoord2f(uv_bottom.u1, uv_bottom.v1); rlVertex3f(x + half, y - half, z - half);
+    rlTexCoord2f(uv_bottom.u0, uv_bottom.v1); rlVertex3f(x - half, y - half, z - half);
 
     // Front (Z+)
-    glColor4f(tint_r * side_shade, tint_g * side_shade, tint_b * side_shade, a);
-    glTexCoord2f(uv_side.u0, uv_side.v0); glVertex3f(x - half, y - half, z + half);
-    glTexCoord2f(uv_side.u1, uv_side.v0); glVertex3f(x + half, y - half, z + half);
-    glTexCoord2f(uv_side.u1, uv_side.v1); glVertex3f(x + half, y + half, z + half);
-    glTexCoord2f(uv_side.u0, uv_side.v1); glVertex3f(x - half, y + half, z + half);
+    rlColor4f(tint_r * side_shade, tint_g * side_shade, tint_b * side_shade, a);
+    rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x - half, y - half, z + half);
+    rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x + half, y - half, z + half);
+    rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x + half, y + half, z + half);
+    rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x - half, y + half, z + half);
 
     // Back (Z-)
-    glColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
-    glTexCoord2f(uv_side.u0, uv_side.v0); glVertex3f(x + half, y - half, z - half);
-    glTexCoord2f(uv_side.u1, uv_side.v0); glVertex3f(x - half, y - half, z - half);
-    glTexCoord2f(uv_side.u1, uv_side.v1); glVertex3f(x - half, y + half, z - half);
-    glTexCoord2f(uv_side.u0, uv_side.v1); glVertex3f(x + half, y + half, z - half);
+    rlColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
+    rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x + half, y - half, z - half);
+    rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x - half, y - half, z - half);
+    rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x - half, y + half, z - half);
+    rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x + half, y + half, z - half);
 
     // Left (X-)
-    glColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
-    glTexCoord2f(uv_side.u0, uv_side.v0); glVertex3f(x - half, y - half, z - half);
-    glTexCoord2f(uv_side.u1, uv_side.v0); glVertex3f(x - half, y - half, z + half);
-    glTexCoord2f(uv_side.u1, uv_side.v1); glVertex3f(x - half, y + half, z + half);
-    glTexCoord2f(uv_side.u0, uv_side.v1); glVertex3f(x - half, y + half, z - half);
+    rlColor4f(tint_r * dark_shade, tint_g * dark_shade, tint_b * dark_shade, a);
+    rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x - half, y - half, z - half);
+    rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x - half, y - half, z + half);
+    rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x - half, y + half, z + half);
+    rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x - half, y + half, z - half);
 
     // Right (X+)
-    glColor4f(tint_r * side_shade, tint_g * side_shade, tint_b * side_shade, a);
-    glTexCoord2f(uv_side.u0, uv_side.v0); glVertex3f(x + half, y - half, z + half);
-    glTexCoord2f(uv_side.u1, uv_side.v0); glVertex3f(x + half, y - half, z - half);
-    glTexCoord2f(uv_side.u1, uv_side.v1); glVertex3f(x + half, y + half, z - half);
-    glTexCoord2f(uv_side.u0, uv_side.v1); glVertex3f(x + half, y + half, z + half);
+    rlColor4f(tint_r * side_shade, tint_g * side_shade, tint_b * side_shade, a);
+    rlTexCoord2f(uv_side.u0, uv_side.v0); rlVertex3f(x + half, y - half, z + half);
+    rlTexCoord2f(uv_side.u1, uv_side.v0); rlVertex3f(x + half, y - half, z - half);
+    rlTexCoord2f(uv_side.u1, uv_side.v1); rlVertex3f(x + half, y + half, z - half);
+    rlTexCoord2f(uv_side.u0, uv_side.v1); rlVertex3f(x + half, y + half, z + half);
 
-    glEnd();
+    rlEnd();
 
     if (outline) {
         render_cube_outline_3d(x, y, z, size, 1.0f);
@@ -771,27 +792,29 @@ static void render_cube_3d_tex(float x, float y, float z, float size, Tile top, 
 // Renderizar plano horizontal 3D (para chao/agua)
 static void render_plane_3d(float x, float y, float z, float size, float r, float g, float b, float a = 1.0f) {
     float half = size * 0.5f;
-    glColor4f(r, g, b, a);
-    glBegin(GL_QUADS);
-    glVertex3f(x - half, y, z - half);
-    glVertex3f(x + half, y, z - half);
-    glVertex3f(x + half, y, z + half);
-    glVertex3f(x - half, y, z + half);
-    glEnd();
+    apply_frame_fog_local(x, y, z, r, g, b);
+    rlColor4f(r, g, b, a);
+    rlBegin(RL_QUADS);
+    rlVertex3f(x - half, y, z - half);
+    rlVertex3f(x + half, y, z - half);
+    rlVertex3f(x + half, y, z + half);
+    rlVertex3f(x - half, y, z + half);
+    rlEnd();
 }
 
-// Renderizar plano texturizado (tile do atlas). Requer GL_TEXTURE_2D habilitado.
+// Renderizar plano texturizado (tile do atlas). Requer rlSetTexture(g_tex_atlas) ativo.
 static void render_plane_3d_tex(float x, float y, float z, float size, Tile tile,
                                 float tint_r, float tint_g, float tint_b, float a = 1.0f) {
     float half = size * 0.5f;
     UvRect uv = atlas_uv(tile);
-    glColor4f(tint_r, tint_g, tint_b, a);
-    glBegin(GL_QUADS);
-    glTexCoord2f(uv.u0, uv.v0); glVertex3f(x - half, y, z - half);
-    glTexCoord2f(uv.u1, uv.v0); glVertex3f(x + half, y, z - half);
-    glTexCoord2f(uv.u1, uv.v1); glVertex3f(x + half, y, z + half);
-    glTexCoord2f(uv.u0, uv.v1); glVertex3f(x - half, y, z + half);
-    glEnd();
+    apply_frame_fog_local(x, y, z, tint_r, tint_g, tint_b);
+    rlColor4f(tint_r, tint_g, tint_b, a);
+    rlBegin(RL_QUADS);
+    rlTexCoord2f(uv.u0, uv.v0); rlVertex3f(x - half, y, z - half);
+    rlTexCoord2f(uv.u1, uv.v0); rlVertex3f(x + half, y, z - half);
+    rlTexCoord2f(uv.u1, uv.v1); rlVertex3f(x + half, y, z + half);
+    rlTexCoord2f(uv.u0, uv.v1); rlVertex3f(x - half, y, z + half);
+    rlEnd();
 }
 
 // render_wall_3d_tex_{xpos,xneg,zpos,zneg}/render_sphere_3d moved to render_primitives.h/
@@ -804,29 +827,50 @@ static void render_plane_3d_tex(float x, float y, float z, float size, Tile tile
 // Renderizar cilindro 3D (para corpo do player)
 static void render_cylinder_3d(float cx, float cy, float cz, float radius, float height, float r, float g, float b, float a = 1.0f, int segments = 12) {
     float half_h = height * 0.5f;
-    
-    // Corpo do cilindro
-    glBegin(GL_QUAD_STRIP);
+
+    // Corpo do cilindro (GL_QUAD_STRIP -> RL_QUADS: buffer do par de vertices anterior,
+    // emite o quad (prev_top,prev_bot,cur_bot,cur_top) a partir da 2a iteracao).
+    rlBegin(RL_QUADS);
+    float prev_tx = 0, prev_ty = 0, prev_tz = 0, prev_r = 0, prev_g = 0, prev_b = 0;
+    float prev_bx = 0, prev_by = 0, prev_bz = 0;
+    bool have_prev = false;
     for (int i = 0; i <= segments; ++i) {
         float angle = 2.0f * kPi * (float)i / segments;
         float x = std::cos(angle);
         float z = std::sin(angle);
         float shade = 0.7f + 0.3f * std::fabs(x);  // Sombreamento lateral
-        glColor4f(r * shade, g * shade, b * shade, a);
-        glVertex3f(cx + radius * x, cy + half_h, cz + radius * z);
-        glVertex3f(cx + radius * x, cy - half_h, cz + radius * z);
+        float cr = r * shade, cg = g * shade, cb = b * shade;
+        float tx = cx + radius * x, ty = cy + half_h, tz = cz + radius * z;
+        float bx = cx + radius * x, by = cy - half_h, bz = cz + radius * z;
+
+        if (have_prev) {
+            rlColor4f(prev_r, prev_g, prev_b, a); rlVertex3f(prev_tx, prev_ty, prev_tz);
+            rlColor4f(prev_r, prev_g, prev_b, a); rlVertex3f(prev_bx, prev_by, prev_bz);
+            rlColor4f(cr, cg, cb, a); rlVertex3f(bx, by, bz);
+            rlColor4f(cr, cg, cb, a); rlVertex3f(tx, ty, tz);
+        }
+        prev_tx = tx; prev_ty = ty; prev_tz = tz;
+        prev_bx = bx; prev_by = by; prev_bz = bz;
+        prev_r = cr; prev_g = cg; prev_b = cb;
+        have_prev = true;
     }
-    glEnd();
-    
-    // Topo
-    glColor4f(r, g, b, a);
-    glBegin(GL_TRIANGLE_FAN);
-    glVertex3f(cx, cy + half_h, cz);
+    rlEnd();
+
+    // Topo (GL_TRIANGLE_FAN -> RL_TRIANGLES: buffer os vertices da fan, re-emite como
+    // triplas (centro, v[i], v[i+1])).
+    std::vector<Vector3> rim(segments + 1);
     for (int i = 0; i <= segments; ++i) {
         float angle = 2.0f * kPi * (float)i / segments;
-        glVertex3f(cx + radius * std::cos(angle), cy + half_h, cz + radius * std::sin(angle));
+        rim[i] = {cx + radius * std::cos(angle), cy + half_h, cz + radius * std::sin(angle)};
     }
-    glEnd();
+    rlBegin(RL_TRIANGLES);
+    for (int i = 0; i < segments; ++i) {
+        rlColor4f(r, g, b, a);
+        rlVertex3f(cx, cy + half_h, cz);
+        rlVertex3f(rim[i].x, rim[i].y, rim[i].z);
+        rlVertex3f(rim[i + 1].x, rim[i + 1].y, rim[i + 1].z);
+    }
+    rlEnd();
 }
 
 static void render_physics_debug_3d() {
@@ -839,52 +883,54 @@ static void render_physics_debug_3d() {
     float foot = ry + g_physics_cfg.collision_skin;
     float head = foot + g_physics_cfg.collider_height;
 
-    glDisable(GL_TEXTURE_2D);
-    glLineWidth(1.8f);
+    rlSetTexture(0);
+    rlSetLineWidth(1.8f);
 
-    // Collider AABB.
-    glColor4f(0.10f, 0.95f, 1.0f, 0.95f);
-    glBegin(GL_LINE_LOOP);
-    glVertex3f(rp.x - hw, foot, rp.y - hd);
-    glVertex3f(rp.x + hw, foot, rp.y - hd);
-    glVertex3f(rp.x + hw, foot, rp.y + hd);
-    glVertex3f(rp.x - hw, foot, rp.y + hd);
-    glEnd();
+    // Collider AABB (GL_LINE_LOOP -> RL_LINES: cada par consecutivo + segmento de fechamento).
+    rlBegin(RL_LINES);
+    rlColor4f(0.10f, 0.95f, 1.0f, 0.95f);
+    rlVertex3f(rp.x - hw, foot, rp.y - hd); rlVertex3f(rp.x + hw, foot, rp.y - hd);
+    rlVertex3f(rp.x + hw, foot, rp.y - hd); rlVertex3f(rp.x + hw, foot, rp.y + hd);
+    rlVertex3f(rp.x + hw, foot, rp.y + hd); rlVertex3f(rp.x - hw, foot, rp.y + hd);
+    rlVertex3f(rp.x - hw, foot, rp.y + hd); rlVertex3f(rp.x - hw, foot, rp.y - hd);
+    rlEnd();
 
-    glBegin(GL_LINE_LOOP);
-    glVertex3f(rp.x - hw, head, rp.y - hd);
-    glVertex3f(rp.x + hw, head, rp.y - hd);
-    glVertex3f(rp.x + hw, head, rp.y + hd);
-    glVertex3f(rp.x - hw, head, rp.y + hd);
-    glEnd();
+    rlBegin(RL_LINES);
+    rlColor4f(0.10f, 0.95f, 1.0f, 0.95f);
+    rlVertex3f(rp.x - hw, head, rp.y - hd); rlVertex3f(rp.x + hw, head, rp.y - hd);
+    rlVertex3f(rp.x + hw, head, rp.y - hd); rlVertex3f(rp.x + hw, head, rp.y + hd);
+    rlVertex3f(rp.x + hw, head, rp.y + hd); rlVertex3f(rp.x - hw, head, rp.y + hd);
+    rlVertex3f(rp.x - hw, head, rp.y + hd); rlVertex3f(rp.x - hw, head, rp.y - hd);
+    rlEnd();
 
-    glBegin(GL_LINES);
-    glVertex3f(rp.x - hw, foot, rp.y - hd); glVertex3f(rp.x - hw, head, rp.y - hd);
-    glVertex3f(rp.x + hw, foot, rp.y - hd); glVertex3f(rp.x + hw, head, rp.y - hd);
-    glVertex3f(rp.x + hw, foot, rp.y + hd); glVertex3f(rp.x + hw, head, rp.y + hd);
-    glVertex3f(rp.x - hw, foot, rp.y + hd); glVertex3f(rp.x - hw, head, rp.y + hd);
-    glEnd();
+    rlBegin(RL_LINES);
+    rlColor4f(0.10f, 0.95f, 1.0f, 0.95f);
+    rlVertex3f(rp.x - hw, foot, rp.y - hd); rlVertex3f(rp.x - hw, head, rp.y - hd);
+    rlVertex3f(rp.x + hw, foot, rp.y - hd); rlVertex3f(rp.x + hw, head, rp.y - hd);
+    rlVertex3f(rp.x + hw, foot, rp.y + hd); rlVertex3f(rp.x + hw, head, rp.y + hd);
+    rlVertex3f(rp.x - hw, foot, rp.y + hd); rlVertex3f(rp.x - hw, head, rp.y + hd);
+    rlEnd();
 
     // Ground rays.
     for (int i = 0; i < g_physics.debug_ray_count; ++i) {
         const PhysicsRayDebug& ray = g_physics.debug_rays[(size_t)i];
-        if (ray.hit) glColor4f(0.20f, 1.0f, 0.30f, 0.90f);
-        else glColor4f(1.0f, 0.20f, 0.20f, 0.90f);
-        glBegin(GL_LINES);
-        glVertex3f(ray.from.x, ray.from.y, ray.from.z);
-        glVertex3f(ray.to.x, ray.to.y, ray.to.z);
-        glEnd();
+        rlBegin(RL_LINES);
+        if (ray.hit) rlColor4f(0.20f, 1.0f, 0.30f, 0.90f);
+        else rlColor4f(1.0f, 0.20f, 0.20f, 0.90f);
+        rlVertex3f(ray.from.x, ray.from.y, ray.from.z);
+        rlVertex3f(ray.to.x, ray.to.y, ray.to.z);
+        rlEnd();
     }
 
     // Camera rays (obstruction checks).
     for (int i = 0; i < g_camera_debug_ray_count; ++i) {
         const CameraDebugRay& ray = g_camera_debug_rays[(size_t)i];
-        if (ray.blocked) glColor4f(1.0f, 0.35f, 0.20f, 0.92f);
-        else glColor4f(0.35f, 0.78f, 1.0f, 0.85f);
-        glBegin(GL_LINES);
-        glVertex3f(ray.from.x, ray.from.y, ray.from.z);
-        glVertex3f(ray.to.x, ray.to.y, ray.to.z);
-        glEnd();
+        rlBegin(RL_LINES);
+        if (ray.blocked) rlColor4f(1.0f, 0.35f, 0.20f, 0.92f);
+        else rlColor4f(0.35f, 0.78f, 1.0f, 0.85f);
+        rlVertex3f(ray.from.x, ray.from.y, ray.from.z);
+        rlVertex3f(ray.to.x, ray.to.y, ray.to.z);
+        rlEnd();
     }
 
     // Ground normal.
@@ -892,11 +938,11 @@ static void render_physics_debug_3d() {
     Vec3 n1 = {n0.x + g_physics.ground_normal.x * 1.1f,
                n0.y + g_physics.ground_normal.y * 1.1f,
                n0.z + g_physics.ground_normal.z * 1.1f};
-    glColor4f(0.30f, 0.70f, 1.0f, 1.0f);
-    glBegin(GL_LINES);
-    glVertex3f(n0.x, n0.y, n0.z);
-    glVertex3f(n1.x, n1.y, n1.z);
-    glEnd();
+    rlBegin(RL_LINES);
+    rlColor4f(0.30f, 0.70f, 1.0f, 1.0f);
+    rlVertex3f(n0.x, n0.y, n0.z);
+    rlVertex3f(n1.x, n1.y, n1.z);
+    rlEnd();
 
     // Velocity vector.
     Vec3 v0 = {rp.x, ry + 0.90f, rp.y};
@@ -905,51 +951,60 @@ static void render_physics_debug_3d() {
         v0.y + g_player.vel_y * 0.10f,
         v0.z + g_player.vel.y * 0.20f
     };
-    glColor4f(1.0f, 0.85f, 0.25f, 1.0f);
-    glBegin(GL_LINES);
-    glVertex3f(v0.x, v0.y, v0.z);
-    glVertex3f(v1.x, v1.y, v1.z);
-    glEnd();
+    rlBegin(RL_LINES);
+    rlColor4f(1.0f, 0.85f, 0.25f, 1.0f);
+    rlVertex3f(v0.x, v0.y, v0.z);
+    rlVertex3f(v1.x, v1.y, v1.z);
+    rlEnd();
 
     // Collision normal.
     if (g_physics.hit_x || g_physics.hit_z) {
         Vec3 c0 = {rp.x, foot + 0.15f, rp.y};
         Vec3 c1 = {c0.x + g_physics.collision_normal.x * 0.7f, c0.y, c0.z + g_physics.collision_normal.y * 0.7f};
-        glColor4f(1.0f, 0.2f, 1.0f, 1.0f);
-        glBegin(GL_LINES);
-        glVertex3f(c0.x, c0.y, c0.z);
-        glVertex3f(c1.x, c1.y, c1.z);
-        glEnd();
+        rlBegin(RL_LINES);
+        rlColor4f(1.0f, 0.2f, 1.0f, 1.0f);
+        rlVertex3f(c0.x, c0.y, c0.z);
+        rlVertex3f(c1.x, c1.y, c1.z);
+        rlEnd();
     }
 
-    glLineWidth(1.0f);
+    rlSetLineWidth(1.0f);
 }
 
 // ============= Rendering =============
 // render_world() loses "static" here for the same reason update_game() does just below in
 // this file: win32_platform.cpp's WinMain() (the win32_platform extraction stage) calls it
 // from another translation unit now, via its own forward declaration.
-void render_world(HDC hdc, int win_w, int win_h) {
+void render_world(int win_w, int win_h) {
     if (!g_world) return;
 
     // === SETUP 3D ===
-    glViewport(0, 0, win_w, win_h);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    
+    rlViewport(0, 0, win_w, win_h);
+    rlEnableDepthTest(); // GL_LESS e o depth func padrao da raylib/rlgl, nao precisa setar.
+    // IMPORTANTE: rlglInit() (chamado dentro de InitWindow) habilita GL_CULL_FACE por padrao
+    // (glCullFace(GL_BACK)/glFrontFace(GL_CCW)/glEnable(GL_CULL_FACE) - ver rlgl.h). O jogo
+    // original (OpenGL 1.x fixo) NUNCA usava GL_CULL_FACE em lugar nenhum - toda a geometria
+    // manual deste arquivo/render_primitives.cpp/sky.cpp (glVertex3f/rlVertex3f por face) foi
+    // desenhada sem se preocupar com winding/orientacao consistente, contando com o default
+    // real do OpenGL (culling desabilitado). Sem este disable, ~metade das faces manuais
+    // (chao/paredes do terreno, cubos do player e dos modulos da base, dome do ceu) somem
+    // dependendo do angulo de camera, porque o winding delas nunca foi pensado para culling.
+    rlDisableBackfaceCulling();
+    rlClearColor(13, 15, 20, 255); // 0.05,0.06,0.08 * 255 - cor de fundo inicial (antes do ceu)
+    rlClearScreenBuffers();
+
     // Projecao perspectiva
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
+    rlMatrixMode(RL_PROJECTION);
+    rlLoadIdentity();
     float aspect = (float)win_w / (float)win_h;
     apply_perspective(74.0f, aspect, 0.1f, 2200.0f);
-    
+
     // Atualizar camera (target + colisao) para o frame atual
     update_camera_for_frame();
-    
+
     // Aplicar view matrix
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+    rlMatrixMode(RL_MODELVIEW);
+    rlLoadIdentity();
     apply_look_at();
 
     float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
@@ -958,11 +1013,13 @@ void render_world(HDC hdc, int win_w, int win_h) {
     float sky_r = lerp(sky_palette.hz_r, sky_palette.zn_r, 0.35f);
     float sky_g = lerp(sky_palette.hz_g, sky_palette.zn_g, 0.35f);
     float sky_b = lerp(sky_palette.hz_b, sky_palette.zn_b, 0.35f);
-    
+
     // Clear com cor do ceu alienigena
-    glClearColor(sky_r, sky_g, sky_b, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    
+    rlClearColor((unsigned char)std::clamp((int)(sky_r * 255.0f), 0, 255),
+                 (unsigned char)std::clamp((int)(sky_g * 255.0f), 0, 255),
+                 (unsigned char)std::clamp((int)(sky_b * 255.0f), 0, 255), 255);
+    rlClearScreenBuffers();
+
     // === RENDERIZAR ELEMENTOS DO CEU (sol, luas, estrelas, anel) ===
     render_alien_sky(g_camera.position.x, g_camera.position.y, g_camera.position.z, day_phase, atmos_factor);
 
@@ -1020,16 +1077,22 @@ void render_world(HDC hdc, int win_w, int win_h) {
             clamp01(sky_b * fog_mul_b),
             1.0f
         };
-        glEnable(GL_FOG);
-        glFogi(GL_FOG_MODE, GL_LINEAR);
-        glFogfv(GL_FOG_COLOR, fog_col);
-        glHint(GL_FOG_HINT, GL_NICEST);
 
         float fog_start = std::max(70.0f, (float)view_radius * g_sky_cfg.fog_start_factor * fog_start_mul);
         float fog_end = std::max(fog_start + 110.0f,
                                  (float)view_radius * g_sky_cfg.fog_end_factor * fog_end_mul + g_sky_cfg.fog_distance_bonus);
-        glFogf(GL_FOG_START, fog_start);
-        glFogf(GL_FOG_END, fog_end);
+
+        // Fog manual (rlgl/raylib nao tem glFog*): parametros setados uma vez aqui, lidos por
+        // render_cube_3d()/render_wall_3d_tex() (render_primitives.cpp) e pelas funcoes locais
+        // render_plane_3d()/render_plane_3d_tex()/render_cube_3d_tex() (acima, neste arquivo)
+        // via g_frame_fog (ver render_primitives.h) - mesmos valores de cor/inicio/fim que os
+        // antigos glFogfv/glFogf usavam.
+        g_frame_fog.enabled = true;
+        g_frame_fog.start = fog_start;
+        g_frame_fog.end = fog_end;
+        g_frame_fog.r = fog_col[0];
+        g_frame_fog.g = fog_col[1];
+        g_frame_fog.b = fog_col[2];
     }
 
     // === RENDERIZACAO 3D DO MUNDO ===
@@ -1042,10 +1105,9 @@ void render_world(HDC hdc, int win_w, int win_h) {
     // Texturas
     bool use_textures = (g_tex_atlas != 0);
     if (use_textures) {
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, g_tex_atlas);
+        rlSetTexture(g_tex_atlas);
     } else {
-        glDisable(GL_TEXTURE_2D);
+        rlSetTexture(0);
     }
     int water_frame = ((int)std::floor(g_day_time * 4.0f)) & 3;
 
@@ -1186,44 +1248,46 @@ void render_world(HDC hdc, int win_w, int win_h) {
                         } else {
                             // Fallback sem texturas: quads coloridos
                             auto wall_col = [&](float s) {
-                                glColor4f(tint_r * s, tint_g * s, tint_b * s, a);
+                                float wr = tint_r * s, wg = tint_g * s, wb = tint_b * s;
+                                apply_frame_fog_local(world_x, (h_here) , world_z, wr, wg, wb);
+                                rlColor4f(wr, wg, wb, a);
                             };
                             constexpr float half = 0.5f;
                             if (h_e < h_here) {
+                                rlBegin(RL_QUADS);
                                 wall_col(side_shade);
-                                glBegin(GL_QUADS);
-                                glVertex3f(world_x + half, h_e, world_z - half);
-                                glVertex3f(world_x + half, h_e, world_z + half);
-                                glVertex3f(world_x + half, h_here, world_z + half);
-                                glVertex3f(world_x + half, h_here, world_z - half);
-                                glEnd();
+                                rlVertex3f(world_x + half, h_e, world_z - half);
+                                rlVertex3f(world_x + half, h_e, world_z + half);
+                                rlVertex3f(world_x + half, h_here, world_z + half);
+                                rlVertex3f(world_x + half, h_here, world_z - half);
+                                rlEnd();
                             }
                             if (h_w < h_here) {
+                                rlBegin(RL_QUADS);
                                 wall_col(dark_shade);
-                                glBegin(GL_QUADS);
-                                glVertex3f(world_x - half, h_w, world_z + half);
-                                glVertex3f(world_x - half, h_w, world_z - half);
-                                glVertex3f(world_x - half, h_here, world_z - half);
-                                glVertex3f(world_x - half, h_here, world_z + half);
-                                glEnd();
+                                rlVertex3f(world_x - half, h_w, world_z + half);
+                                rlVertex3f(world_x - half, h_w, world_z - half);
+                                rlVertex3f(world_x - half, h_here, world_z - half);
+                                rlVertex3f(world_x - half, h_here, world_z + half);
+                                rlEnd();
                             }
                             if (h_s < h_here) {
+                                rlBegin(RL_QUADS);
                                 wall_col(side_shade);
-                                glBegin(GL_QUADS);
-                                glVertex3f(world_x - half, h_s, world_z + half);
-                                glVertex3f(world_x + half, h_s, world_z + half);
-                                glVertex3f(world_x + half, h_here, world_z + half);
-                                glVertex3f(world_x - half, h_here, world_z + half);
-                                glEnd();
+                                rlVertex3f(world_x - half, h_s, world_z + half);
+                                rlVertex3f(world_x + half, h_s, world_z + half);
+                                rlVertex3f(world_x + half, h_here, world_z + half);
+                                rlVertex3f(world_x - half, h_here, world_z + half);
+                                rlEnd();
                             }
                             if (h_n < h_here) {
+                                rlBegin(RL_QUADS);
                                 wall_col(dark_shade);
-                                glBegin(GL_QUADS);
-                                glVertex3f(world_x + half, h_n, world_z - half);
-                                glVertex3f(world_x - half, h_n, world_z - half);
-                                glVertex3f(world_x - half, h_here, world_z - half);
-                                glVertex3f(world_x + half, h_here, world_z - half);
-                                glEnd();
+                                rlVertex3f(world_x + half, h_n, world_z - half);
+                                rlVertex3f(world_x - half, h_n, world_z - half);
+                                rlVertex3f(world_x - half, h_here, world_z - half);
+                                rlVertex3f(world_x + half, h_here, world_z - half);
+                                rlEnd();
                             }
                         }
                     }
@@ -1336,10 +1400,9 @@ void render_world(HDC hdc, int win_w, int win_h) {
     }
 
     if (use_textures) {
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glDisable(GL_TEXTURE_2D);
+        rlSetTexture(0);
     }
-    
+
     // === RENDERIZAR PLAYER 3D (Estilo Minicraft - Blocky) ===
     {
         float px = rpos.x;
@@ -1353,15 +1416,15 @@ void render_world(HDC hdc, int win_w, int win_h) {
         float danger_pulse = in_danger ? (0.5f + 0.5f * std::sin(g_player.anim_frame * 8.0f)) : 0.0f;
         
         // Sombra no chao (maior e mais visivel)
-        glDisable(GL_DEPTH_TEST);
+        rlDisableDepthTest();
         render_plane_3d(px, g_player.ground_height + 0.02f, pz, 0.9f, 0.0f, 0.0f, 0.0f, 0.55f);
-        
+
         // Circulo de indicador de perigo
         if (in_danger) {
-            render_plane_3d(px, g_player.ground_height + 0.03f, pz, 1.2f, 
+            render_plane_3d(px, g_player.ground_height + 0.03f, pz, 1.2f,
                 kColorDanger[0], kColorDanger[1], kColorDanger[2], danger_pulse * 0.3f);
         }
-        glEnable(GL_DEPTH_TEST);
+        rlEnableDepthTest();
         
         // Usar rotacao continua para orientar o personagem
         float rot_rad = get_player_render_rotation() * (kPi / 180.0f);
@@ -1488,9 +1551,9 @@ void render_world(HDC hdc, int win_w, int win_h) {
         float lamp_z = pz + cos_rot * 0.22f;
         float lamp_i = std::clamp(g_player_visual_cfg.headlamp_intensity, 0.0f, 2.0f);
         render_cube_3d(lamp_x, py + 0.80f + bob, lamp_z, 0.06f, 0.95f * lamp_i, 0.90f * lamp_i, 0.58f * lamp_i, 0.95f, false);
-        glDisable(GL_DEPTH_TEST);
+        rlDisableDepthTest();
         render_plane_3d(lamp_x + sin_rot * 0.18f, py + 0.70f + bob, lamp_z + cos_rot * 0.18f, 0.42f, 1.0f, 0.92f, 0.68f, 0.20f * lamp_i);
-        glEnable(GL_DEPTH_TEST);
+        rlEnableDepthTest();
         
         // === PERNAS (2 blocos pequenos animados) ===
         float leg_sep = 0.12f;
@@ -1529,14 +1592,14 @@ void render_world(HDC hdc, int win_w, int win_h) {
     // Desenha um contorno no bloco/tile sob a mira para deixar claro o que sera minerado/coletado/colocado.
     auto draw_tile_outline = [&](int tx, int tz, float y, float size, float r, float g, float b, float a, float lw) {
         float half = size * 0.5f;
-        glLineWidth(lw);
-        glColor4f(r, g, b, a);
-        glBegin(GL_LINE_LOOP);
-        glVertex3f((float)tx - half, y, (float)tz - half);
-        glVertex3f((float)tx + half, y, (float)tz - half);
-        glVertex3f((float)tx + half, y, (float)tz + half);
-        glVertex3f((float)tx - half, y, (float)tz + half);
-        glEnd();
+        rlSetLineWidth(lw);
+        rlBegin(RL_LINES);
+        rlColor4f(r, g, b, a);
+        rlVertex3f((float)tx - half, y, (float)tz - half); rlVertex3f((float)tx + half, y, (float)tz - half);
+        rlVertex3f((float)tx + half, y, (float)tz - half); rlVertex3f((float)tx + half, y, (float)tz + half);
+        rlVertex3f((float)tx + half, y, (float)tz + half); rlVertex3f((float)tx - half, y, (float)tz + half);
+        rlVertex3f((float)tx - half, y, (float)tz + half); rlVertex3f((float)tx - half, y, (float)tz - half);
+        rlEnd();
     };
 
     int ptx = world_to_tile(rpos.x);
@@ -1550,9 +1613,8 @@ void render_world(HDC hdc, int win_w, int win_h) {
         Block tb = g_world->get(g_target_x, g_target_y);
         float base_y = (float)g_world->height_at(g_target_x, g_target_y) * kHeightScale;
 
-        glDisable(GL_TEXTURE_2D);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        rlSetTexture(0);
+        rlSetBlendMode(RL_BLEND_ALPHA);
 
         // Evita caixa em volta do proprio jogador.
         if (!is_player_tile(g_target_x, g_target_y)) {
@@ -1568,15 +1630,15 @@ void render_world(HDC hdc, int win_w, int win_h) {
                 render_cube_outline_3d((float)g_target_x, cy, (float)g_target_y, 1.04f, 2.5f);
 
                 // Outline branco leve
-                glLineWidth(1.5f);
-                glColor4f(1.0f, 1.0f, 1.0f, 0.55f);
+                rlSetLineWidth(1.5f);
                 float half = 1.04f * 0.5f;
-                glBegin(GL_LINE_LOOP);
-                glVertex3f((float)g_target_x - half, cy + half, (float)g_target_y - half);
-                glVertex3f((float)g_target_x + half, cy + half, (float)g_target_y - half);
-                glVertex3f((float)g_target_x + half, cy + half, (float)g_target_y + half);
-                glVertex3f((float)g_target_x - half, cy + half, (float)g_target_y + half);
-                glEnd();
+                rlBegin(RL_LINES);
+                rlColor4f(1.0f, 1.0f, 1.0f, 0.55f);
+                rlVertex3f((float)g_target_x - half, cy + half, (float)g_target_y - half); rlVertex3f((float)g_target_x + half, cy + half, (float)g_target_y - half);
+                rlVertex3f((float)g_target_x + half, cy + half, (float)g_target_y - half); rlVertex3f((float)g_target_x + half, cy + half, (float)g_target_y + half);
+                rlVertex3f((float)g_target_x + half, cy + half, (float)g_target_y + half); rlVertex3f((float)g_target_x - half, cy + half, (float)g_target_y + half);
+                rlVertex3f((float)g_target_x - half, cy + half, (float)g_target_y + half); rlVertex3f((float)g_target_x - half, cy + half, (float)g_target_y - half);
+                rlEnd();
             }
         }
     }
@@ -1609,13 +1671,11 @@ void render_world(HDC hdc, int win_w, int win_h) {
             else if (tb == Block::Water) crack_y = base_y - 0.18f + 0.002f;
             else if (tb != Block::Air && !is_ground_like(tb)) crack_y = base_y + get_block_height(tb) + 0.002f;
 
-            glDepthMask(GL_FALSE);
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, g_tex_atlas);
+            rlDisableDepthMask();
+            rlSetTexture(g_tex_atlas);
             render_plane_3d_tex(target_x, crack_y, target_z, 1.04f, crack, 1.0f, 1.0f, 1.0f, 1.0f);
-            glBindTexture(GL_TEXTURE_2D, 0);
-            glDisable(GL_TEXTURE_2D);
-            glDepthMask(GL_TRUE);
+            rlSetTexture(0);
+            rlEnableDepthMask();
 
             // Barra de quebra opcional (feedback claro).
             if (!is_player_tile(g_target_x, g_target_y)) {
@@ -1624,23 +1684,23 @@ void render_world(HDC hdc, int win_w, int win_h) {
                 float y = crack_y + 0.012f;
                 float x0 = (float)g_target_x - bar_w * 0.5f;
                 float z0 = (float)g_target_y - 0.56f;
-                glDisable(GL_TEXTURE_2D);
-                glColor4f(0.02f, 0.02f, 0.03f, 0.78f);
-                glBegin(GL_QUADS);
-                glVertex3f(x0, y, z0);
-                glVertex3f(x0 + bar_w, y, z0);
-                glVertex3f(x0 + bar_w, y, z0 + bar_h);
-                glVertex3f(x0, y, z0 + bar_h);
-                glEnd();
+                rlSetTexture(0);
+                rlBegin(RL_QUADS);
+                rlColor4f(0.02f, 0.02f, 0.03f, 0.78f);
+                rlVertex3f(x0, y, z0);
+                rlVertex3f(x0 + bar_w, y, z0);
+                rlVertex3f(x0 + bar_w, y, z0 + bar_h);
+                rlVertex3f(x0, y, z0 + bar_h);
+                rlEnd();
 
                 float fill = std::clamp(g_mine_progress, 0.0f, 1.0f) * (bar_w - 0.02f);
-                glColor4f(0.95f, 0.82f, 0.26f, 0.92f);
-                glBegin(GL_QUADS);
-                glVertex3f(x0 + 0.01f, y + 0.001f, z0 + 0.01f);
-                glVertex3f(x0 + 0.01f + fill, y + 0.001f, z0 + 0.01f);
-                glVertex3f(x0 + 0.01f + fill, y + 0.001f, z0 + bar_h - 0.01f);
-                glVertex3f(x0 + 0.01f, y + 0.001f, z0 + bar_h - 0.01f);
-                glEnd();
+                rlBegin(RL_QUADS);
+                rlColor4f(0.95f, 0.82f, 0.26f, 0.92f);
+                rlVertex3f(x0 + 0.01f, y + 0.001f, z0 + 0.01f);
+                rlVertex3f(x0 + 0.01f + fill, y + 0.001f, z0 + 0.01f);
+                rlVertex3f(x0 + 0.01f + fill, y + 0.001f, z0 + bar_h - 0.01f);
+                rlVertex3f(x0 + 0.01f, y + 0.001f, z0 + bar_h - 0.01f);
+                rlEnd();
             }
         }
     }
@@ -1665,54 +1725,90 @@ void render_world(HDC hdc, int win_w, int win_h) {
             float pulse = 0.5f + 0.5f * std::sin(g_day_time * g_base_cfg.beacon_pulse_speed);
             float final_alpha = beacon_intensity * pulse * g_base_cfg.beacon_alpha;
             
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            glDisable(GL_TEXTURE_2D);
-            glDepthMask(GL_FALSE);
-            
-            // Pilar de luz principal (gradiente vertical)
-            glBegin(GL_QUAD_STRIP);
-            for (int i = 0; i <= 20; ++i) {
-                float t = (float)i / 20.0f;
-                float y = base_h + t * (beacon_h - base_h);
-                float alpha = (1.0f - t * 0.8f) * final_alpha;
-                float width = 0.2f * (1.0f - t * 0.5f);  // Afina no topo
-                
-                // Cor azul ciano pulsante
-                glColor4f(0.3f, 0.8f, 1.0f, alpha);
-                glVertex3f(bx - width, y, bz);
-                glVertex3f(bx + width, y, bz);
+            rlSetBlendMode(RL_BLEND_ALPHA);
+            rlSetTexture(0);
+            rlDisableDepthMask();
+
+            // Pilar de luz principal (gradiente vertical). GL_QUAD_STRIP -> RL_QUADS: buffer
+            // do par de vertices anterior, emite (prev_left,prev_right,cur_right,cur_left) a
+            // partir da 2a iteracao.
+            {
+                rlBegin(RL_QUADS);
+                float prev_lx = 0, prev_ly = 0, prev_lz = 0, prev_rx = 0, prev_ry = 0, prev_rz = 0, prev_a = 0;
+                bool have_prev = false;
+                for (int i = 0; i <= 20; ++i) {
+                    float t = (float)i / 20.0f;
+                    float y = base_h + t * (beacon_h - base_h);
+                    float alpha = (1.0f - t * 0.8f) * final_alpha;
+                    float width = 0.2f * (1.0f - t * 0.5f);  // Afina no topo
+
+                    float lx = bx - width, ly = y, lz = bz;
+                    float rx = bx + width, ry = y, rz = bz;
+                    if (have_prev) {
+                        rlColor4f(0.3f, 0.8f, 1.0f, prev_a); rlVertex3f(prev_lx, prev_ly, prev_lz);
+                        rlColor4f(0.3f, 0.8f, 1.0f, prev_a); rlVertex3f(prev_rx, prev_ry, prev_rz);
+                        rlColor4f(0.3f, 0.8f, 1.0f, alpha); rlVertex3f(rx, ry, rz);
+                        rlColor4f(0.3f, 0.8f, 1.0f, alpha); rlVertex3f(lx, ly, lz);
+                    }
+                    prev_lx = lx; prev_ly = ly; prev_lz = lz;
+                    prev_rx = rx; prev_ry = ry; prev_rz = rz;
+                    prev_a = alpha;
+                    have_prev = true;
+                }
+                rlEnd();
             }
-            glEnd();
-            
+
             // Pilar secundario (perpendicular para visibilidade 3D)
-            glBegin(GL_QUAD_STRIP);
-            for (int i = 0; i <= 20; ++i) {
-                float t = (float)i / 20.0f;
-                float y = base_h + t * (beacon_h - base_h);
-                float alpha = (1.0f - t * 0.8f) * final_alpha * 0.7f;
-                float width = 0.15f * (1.0f - t * 0.5f);
-                
-                glColor4f(0.3f, 0.8f, 1.0f, alpha);
-                glVertex3f(bx, y, bz - width);
-                glVertex3f(bx, y, bz + width);
+            {
+                rlBegin(RL_QUADS);
+                float prev_lx = 0, prev_ly = 0, prev_lz = 0, prev_rx = 0, prev_ry = 0, prev_rz = 0, prev_a = 0;
+                bool have_prev = false;
+                for (int i = 0; i <= 20; ++i) {
+                    float t = (float)i / 20.0f;
+                    float y = base_h + t * (beacon_h - base_h);
+                    float alpha = (1.0f - t * 0.8f) * final_alpha * 0.7f;
+                    float width = 0.15f * (1.0f - t * 0.5f);
+
+                    float lx = bx, ly = y, lz = bz - width;
+                    float rx = bx, ry = y, rz = bz + width;
+                    if (have_prev) {
+                        rlColor4f(0.3f, 0.8f, 1.0f, prev_a); rlVertex3f(prev_lx, prev_ly, prev_lz);
+                        rlColor4f(0.3f, 0.8f, 1.0f, prev_a); rlVertex3f(prev_rx, prev_ry, prev_rz);
+                        rlColor4f(0.3f, 0.8f, 1.0f, alpha); rlVertex3f(rx, ry, rz);
+                        rlColor4f(0.3f, 0.8f, 1.0f, alpha); rlVertex3f(lx, ly, lz);
+                    }
+                    prev_lx = lx; prev_ly = ly; prev_lz = lz;
+                    prev_rx = rx; prev_ry = ry; prev_rz = rz;
+                    prev_a = alpha;
+                    have_prev = true;
+                }
+                rlEnd();
             }
-            glEnd();
-            
-            // Halo na base do beacon
-            float halo_pulse = 0.6f + 0.4f * pulse;
-            glBegin(GL_TRIANGLE_FAN);
-            glColor4f(0.3f, 0.8f, 1.0f, final_alpha * 0.5f * halo_pulse);
-            glVertex3f(bx, base_h + 0.1f, bz);
-            glColor4f(0.3f, 0.8f, 1.0f, 0.0f);
-            for (int i = 0; i <= 16; ++i) {
-                float angle = (float)i * (2.0f * kPi / 16.0f);
-                float halo_r = 1.5f * halo_pulse;
-                glVertex3f(bx + std::cos(angle) * halo_r, base_h + 0.05f, bz + std::sin(angle) * halo_r);
+
+            // Halo na base do beacon (GL_TRIANGLE_FAN -> RL_TRIANGLES: buffer o anel, re-emite
+            // como triplas (centro, v[i], v[i+1])).
+            {
+                float halo_pulse = 0.6f + 0.4f * pulse;
+                float center_alpha = final_alpha * 0.5f * halo_pulse;
+                std::vector<Vector3> rim(17);
+                for (int i = 0; i <= 16; ++i) {
+                    float angle = (float)i * (2.0f * kPi / 16.0f);
+                    float halo_r = 1.5f * halo_pulse;
+                    rim[i] = {bx + std::cos(angle) * halo_r, base_h + 0.05f, bz + std::sin(angle) * halo_r};
+                }
+                rlBegin(RL_TRIANGLES);
+                for (int i = 0; i < 16; ++i) {
+                    rlColor4f(0.3f, 0.8f, 1.0f, center_alpha);
+                    rlVertex3f(bx, base_h + 0.1f, bz);
+                    rlColor4f(0.3f, 0.8f, 1.0f, 0.0f);
+                    rlVertex3f(rim[i].x, rim[i].y, rim[i].z);
+                    rlColor4f(0.3f, 0.8f, 1.0f, 0.0f);
+                    rlVertex3f(rim[i + 1].x, rim[i + 1].y, rim[i + 1].z);
+                }
+                rlEnd();
             }
-            glEnd();
-            
-            glDepthMask(GL_TRUE);
+
+            rlEnableDepthMask();
         }
     }
     
@@ -1768,7 +1864,8 @@ void render_world(HDC hdc, int win_w, int win_h) {
     // Resetar clique do mouse no final do frame
     g_mouse_left_clicked = false;
 
-    SwapBuffers(hdc);
+    // SwapBuffers(hdc) removed: win32_platform.cpp's main loop wraps this call in
+    // BeginDrawing()/EndDrawing(), which handles the buffer swap now.
 }
 
 // ============= Input State =============
@@ -1785,7 +1882,7 @@ void render_world(HDC hdc, int win_w, int win_h) {
 // themselves, since they are the two intentional final orchestrators left in this file,
 // not a reusable module) - same pattern as every other "lost static" function in this
 // codebase's extraction stages.
-void update_game(float dt, HWND hwnd) {
+void update_game(float dt) {
     if (!g_world) return;
 
     // Toast timer
@@ -1822,21 +1919,21 @@ void update_game(float dt, HWND hwnd) {
     }
 
     // Hotkey states
-    bool esc_pressed = key_pressed(VK_ESCAPE, g_prev_esc);
-    bool enter_pressed = key_pressed(VK_RETURN, g_prev_enter);
-    bool f5_pressed = key_pressed(VK_F5, g_prev_f5);
-    bool f9_pressed = key_pressed(VK_F9, g_prev_f9);
-    bool l_pressed = key_pressed('L', g_prev_l);
-    bool q_pressed = key_pressed('Q', g_prev_q);
-    bool f3_pressed = key_pressed(VK_F3, g_prev_f3);
-    bool f6_pressed = key_pressed(VK_F6, g_prev_f6);
-    bool f7_pressed = key_pressed(VK_F7, g_prev_f7);
-    bool h_pressed = key_pressed('H', g_prev_h);
-    bool tab_pressed = key_pressed(VK_TAB, g_prev_tab);
-    bool b_pressed = key_pressed('B', g_prev_b);
-    bool m_pressed = key_pressed('M', g_prev_m);
-    bool r_pressed = key_pressed('R', g_prev_r);
-    bool c_key_pressed = key_pressed('C', g_prev_c);
+    bool esc_pressed = key_pressed(KEY_ESCAPE, g_prev_esc);
+    bool enter_pressed = key_pressed(KEY_ENTER, g_prev_enter);
+    bool f5_pressed = key_pressed(KEY_F5, g_prev_f5);
+    bool f9_pressed = key_pressed(KEY_F9, g_prev_f9);
+    bool l_pressed = key_pressed(KEY_L, g_prev_l);
+    bool q_pressed = key_pressed(KEY_Q, g_prev_q);
+    bool f3_pressed = key_pressed(KEY_F3, g_prev_f3);
+    bool f6_pressed = key_pressed(KEY_F6, g_prev_f6);
+    bool f7_pressed = key_pressed(KEY_F7, g_prev_f7);
+    bool h_pressed = key_pressed(KEY_H, g_prev_h);
+    bool tab_pressed = key_pressed(KEY_TAB, g_prev_tab);
+    bool b_pressed = key_pressed(KEY_B, g_prev_b);
+    bool m_pressed = key_pressed(KEY_M, g_prev_m);
+    bool r_pressed = key_pressed(KEY_R, g_prev_r);
+    bool c_key_pressed = key_pressed(KEY_C, g_prev_c);
     
     // === MAPA GRANDE (tecla M) ===
     if (m_pressed && g_state == GameState::Playing) {
@@ -1859,23 +1956,22 @@ void update_game(float dt, HWND hwnd) {
         
         // WASD para mover o mapa
         float pan_speed = g_map_cfg.world_map_pan_speed * dt / g_minimap.world_zoom;
-        if (key_down('W') || key_down(VK_UP)) g_minimap.world_pan_y -= pan_speed;
-        if (key_down('S') || key_down(VK_DOWN)) g_minimap.world_pan_y += pan_speed;
-        if (key_down('A') || key_down(VK_LEFT)) g_minimap.world_pan_x -= pan_speed;
-        if (key_down('D') || key_down(VK_RIGHT)) g_minimap.world_pan_x += pan_speed;
-        
+        if (key_down(KEY_W) || key_down(KEY_UP)) g_minimap.world_pan_y -= pan_speed;
+        if (key_down(KEY_S) || key_down(KEY_DOWN)) g_minimap.world_pan_y += pan_speed;
+        if (key_down(KEY_A) || key_down(KEY_LEFT)) g_minimap.world_pan_x -= pan_speed;
+        if (key_down(KEY_D) || key_down(KEY_RIGHT)) g_minimap.world_pan_x += pan_speed;
+
         // Limitar pan aos limites do mundo
         g_minimap.world_pan_x = std::clamp(g_minimap.world_pan_x, 0.0f, (float)g_world->w);
         g_minimap.world_pan_y = std::clamp(g_minimap.world_pan_y, 0.0f, (float)g_world->h);
-        
+
         // Clique para adicionar waypoint
         if (g_mouse_left_clicked) {
-            // Converter posicao do mouse para coordenadas do mundo
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            int win_w = rc.right - rc.left;
-            int win_h = rc.bottom - rc.top;
-            
+            // Converter posicao do mouse para coordenadas do mundo (raylib: sem HWND, o
+            // tamanho da janela vem direto de GetScreenWidth/Height)
+            int win_w = GetScreenWidth();
+            int win_h = GetScreenHeight();
+
             float map_margin = 50.0f;
             float map_w = (float)win_w - map_margin * 2.0f;
             float map_h = (float)win_h - map_margin * 2.0f - 50.0f;
@@ -1950,7 +2046,7 @@ void update_game(float dt, HWND hwnd) {
     // "return;" became "return true;" (this frame's input was fully consumed by a menu
     // screen), with a final "return false;" added for the Playing state (no menu state
     // matched - fall through to this file's own Playing-state input code below).
-    if (update_menu_input(dt, hwnd, esc_pressed, enter_pressed, f5_pressed, f9_pressed, l_pressed, q_pressed)) return;
+    if (update_menu_input(dt, esc_pressed, enter_pressed, f5_pressed, f9_pressed, l_pressed, q_pressed)) return;
 
     // Playing state
     
@@ -2042,10 +2138,10 @@ void update_game(float dt, HWND hwnd) {
 
     float input_forward = 0.0f;
     float input_right = 0.0f;
-    if (key_down('W') || key_down(VK_UP)) input_forward += 1.0f;
-    if (key_down('S') || key_down(VK_DOWN)) input_forward -= 1.0f;
-    if (key_down('A') || key_down(VK_LEFT)) input_right -= 1.0f;
-    if (key_down('D') || key_down(VK_RIGHT)) input_right += 1.0f;
+    if (key_down(KEY_W) || key_down(KEY_UP)) input_forward += 1.0f;
+    if (key_down(KEY_S) || key_down(KEY_DOWN)) input_forward -= 1.0f;
+    if (key_down(KEY_A) || key_down(KEY_LEFT)) input_right -= 1.0f;
+    if (key_down(KEY_D) || key_down(KEY_RIGHT)) input_right += 1.0f;
 
     Vec2 move_world = {
         input_forward * cam_forward_x + input_right * cam_right_x,
@@ -2054,8 +2150,9 @@ void update_game(float dt, HWND hwnd) {
     bool has_input = (move_world.x != 0.0f || move_world.y != 0.0f);
     if (has_input) move_world = vec2_normalize(move_world);
 
-    bool run_key = key_down(VK_SHIFT);
-    bool jump_held = key_down(VK_SPACE);
+    // VK_SHIFT has no direct raylib equivalent (raylib splits left/right shift).
+    bool run_key = key_down(KEY_LEFT_SHIFT) || key_down(KEY_RIGHT_SHIFT);
+    bool jump_held = key_down(KEY_SPACE);
     bool jump_pressed = jump_held && !g_physics.jump_was_held;
     bool jump_released = !jump_held && g_physics.jump_was_held;
     g_physics.jump_was_held = jump_held;
@@ -2069,10 +2166,10 @@ void update_game(float dt, HWND hwnd) {
     physics_input.jump_released = jump_released;
     step_player_physics(physics_input, dt);
 
-    if (key_down(VK_ADD) || key_down(VK_OEM_PLUS)) {
+    if (key_down(KEY_KP_ADD) || key_down(KEY_EQUAL)) {
         g_camera.distance = std::max(g_camera.min_distance, g_camera.distance - 10.0f * dt);
     }
-    if (key_down(VK_SUBTRACT) || key_down(VK_OEM_MINUS)) {
+    if (key_down(KEY_KP_SUBTRACT) || key_down(KEY_MINUS)) {
         g_camera.distance = std::min(g_camera.max_distance, g_camera.distance + 10.0f * dt);
     }
 
@@ -2171,7 +2268,7 @@ void update_game(float dt, HWND hwnd) {
     // blocks_raycast/ray_aabb_hit/ray_hits_tile/placeable_tile_for_place) are now named,
     // explicit-parameter functions there instead - the highest-value mechanical change of
     // this extraction stage, per the refactor plan.
-    update_mining_and_placement(dt, hwnd);
+    update_mining_and_placement(dt);
 }
 
 // ============= Window Procedure / WinMain =============

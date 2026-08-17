@@ -3,10 +3,13 @@ project(TerraFormer2D LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# raylib (modernizacao: substitui Win32 + OpenGL 1.x fixed-function, etapa por etapa -
-# ver plano em C:\Users\9173\.claude\plans\quero-refatorar-todo-o-serene-kazoo.md).
-# Etapa 1 (scaffolding): so busca/compila a raylib e linka no executavel existente, sem
-# nenhuma chamada de API da raylib ainda - o jogo continua 100% Win32/GL ate a proxima etapa.
+# raylib (modernizacao: substitui Win32 + OpenGL 1.x fixed-function - ver plano em
+# C:\Users\9173\.claude\plans\quero-refatorar-todo-o-serene-kazoo.md). Migracao completa:
+# main() (plain, sem WinMain) + raylib cuida de janela/input/texto/textura/desenho; os poucos
+# trechos que precisavam de shading por face/vertice customizado (render_cube_3d,
+# render_wall_3d_tex e as funcoes locais equivalentes em main.cpp) foram portados
+# mecanicamente para rlgl (API de baixo nivel da raylib) em vez de reescritos contra a API
+# de alto nivel.
 include(FetchContent)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES OFF CACHE BOOL "" FORCE)
@@ -17,7 +20,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(raylib)
 
-# Win32 + OpenGL (legado, sendo substituido)
 add_executable(terraformer WIN32
   src/main.cpp
   src/math_core.cpp
@@ -49,9 +51,19 @@ add_executable(terraformer WIN32
 
 if(MSVC)
   target_compile_definitions(terraformer PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_link_libraries(terraformer PRIVATE opengl32 gdi32 user32 kernel32 raylib)
+  # opengl32/gdi32/user32/kernel32 removed: raylib's own CMake target already provides these
+  # as transitive/interface link dependencies (confirmed via an actual build in this session -
+  # they appear in the real link command even without an explicit entry here). Keeping our own
+  # explicit entries alongside raylib's caused a LNK2005 ShowCursor collision (raylib.h defines
+  # its own ShowCursor() with the same name as user32's WinAPI ShowCursor(), and having two
+  # separate reference paths to user32.lib in the same link pulled in conflicting object code
+  # for it) - dropping the redundant explicit entries resolves it.
+  target_link_libraries(terraformer PRIVATE raylib)
+  # main() replaces WinMain now; these flags keep the console window from appearing on
+  # Windows, matching the WIN32 keyword above on add_executable().
+  target_link_options(terraformer PRIVATE "/SUBSYSTEM:WINDOWS" "/ENTRY:mainCRTStartup")
 else()
-  target_link_libraries(terraformer PRIVATE GL X11 raylib)
+  target_link_libraries(terraformer PRIVATE raylib)
 endif()
 
-message(STATUS "Configured TerraFormer2D - Win32 Standalone")
+message(STATUS "Configured TerraFormer2D - raylib")

@@ -1,6 +1,11 @@
 #pragma once
 
-#include "platform.h"   // std::string / std::vector / uint32_t (via <cstdint>)
+// NOTE: same cross-cutting-header constraint as config_types.h (see its comment) - this
+// file is included by both raylib-migrated and legacy files, so it must stick to plain STL
+// includes rather than platform.h/raylib_platform.h.
+#include <string>
+#include <vector>
+#include <cstdint>
 #include "blocks.h"     // Block (used by CollectPopup / add_collect_popup)
 
 // ============= Game State / Feedback / Onboarding =============

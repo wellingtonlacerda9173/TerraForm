@@ -1,6 +1,6 @@
 #include "win32_platform.h"
 
-#include "platform.h"
+#include "raylib_platform.h"
 #include "math_core.h"
 #include "world.h"
 #include "camera.h"
@@ -11,17 +11,16 @@
 #include "textures.h"
 #include "font.h"
 
-// ============= Win32 Platform Layer (Window Procedure / WinMain) =============
-// Extracted verbatim from main.cpp - see win32_platform.h for the full extraction-stage
-// description (this is the last stage of the whole refactor plan).
+// ============= Platform Layer (raylib main loop) =============
+// Migrated from Win32 (WindowProc/WinMain/WGL context setup) to raylib's InitWindow()/
+// WindowShouldClose()/CloseWindow(). See win32_platform.h for the high-level description.
 
-// g_quit/g_cam_pos/g_mouse_x/g_mouse_y/g_mouse_left_clicked/g_minimap/g_map_cfg are owned
-// by main.cpp (already non-static there for other extracted modules) - this file gets them
-// via its own local extern declarations, same "own local extern declaration" pattern used
-// by every other extracted .cpp file (e.g. g_show_build_menu/etc. in building_interaction.cpp,
-// g_settings/etc. in ui_menu.cpp). g_state/g_camera/g_player/g_world/g_physics_cfg-style
-// globals are NOT re-declared here: game_state.h/camera.h/player_physics.h/world.h already
-// supply real (non-forward) extern declarations for g_state/g_camera/g_player/g_world.
+// g_quit/g_cam_pos/g_mouse_x/g_mouse_y/g_mouse_left_clicked/g_minimap/g_map_cfg are owned by
+// main.cpp (already non-static there for other extracted modules) - this file gets them via
+// its own local extern declarations, same pattern used throughout this codebase's extraction
+// stages. g_state/g_camera/g_player/g_world/g_physics_cfg-style globals are NOT re-declared
+// here: game_state.h/camera.h/player_physics.h/world.h already supply real (non-forward)
+// extern declarations for g_state/g_camera/g_player/g_world.
 extern bool g_quit;
 extern Vec2 g_cam_pos;
 extern int g_mouse_x;
@@ -31,191 +30,98 @@ extern MiniMapRuntime g_minimap;
 extern MapConfig g_map_cfg;
 
 // WORLD_WIDTH/WORLD_HEIGHT: compile-time literals (not mutable state) defined in main.cpp;
-// kept here as this file's own copy rather than shared via extern - same pattern as the
-// WORLD_WIDTH/WORLD_HEIGHT duplication already used in ui_menu.cpp (and the kDayLength-style
-// duplication in modules_building.cpp/minimap.cpp/sky.cpp/lighting.cpp/ui_hud.cpp).
+// kept here as this file's own copy rather than shared via extern - same pattern as elsewhere
+// in this codebase.
 static const int WORLD_WIDTH = 512;
 static const int WORLD_HEIGHT = 256;
 
-// render_world()/update_game() stay DEFINED in main.cpp per the refactor plan - they are
-// the two intentional final orchestrators left there, not part of this extraction. They
-// lose "static" linkage in main.cpp as of this stage, since WinMain (below, now in this
-// different translation unit) is their only caller. No shared header declares them (they
-// are not a reusable module, just the last two functions left in main.cpp), so this file
-// forward-declares them itself, mirroring the "own local declaration" pattern used
-// throughout this codebase's extraction stages.
-void render_world(HDC hdc, int win_w, int win_h);
-void update_game(float dt, HWND hwnd);
+// render_world()/update_game() stay DEFINED in main.cpp per the refactor plan - they are the
+// two intentional final orchestrators left there. They lost their HWND/HDC parameters in this
+// stage (raylib has no window handle/device context to hand them) - this file forward-declares
+// the new signatures itself, mirroring the "own local declaration" pattern used throughout this
+// codebase's extraction stages.
+void render_world(int win_w, int win_h);
+void update_game(float dt);
 
-// ============= OpenGL Setup =============
-static HGLRC setup_opengl(HDC hdc) {
-    PIXELFORMATDESCRIPTOR pfd = {0};
-    pfd.nSize = sizeof(pfd);
-    pfd.nVersion = 1;
-    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-    pfd.iPixelType = PFD_TYPE_RGBA;
-    pfd.cColorBits = 32;
-    pfd.cDepthBits = 24;
-    pfd.iLayerType = PFD_MAIN_PLANE;
-
-    int format = ChoosePixelFormat(hdc, &pfd);
-    SetPixelFormat(hdc, format, &pfd);
-
-    HGLRC hrc = wglCreateContext(hdc);
-    wglMakeCurrent(hdc, hrc);
-
-    glDisable(GL_DEPTH_TEST);
-    glClearColor(0.05f, 0.06f, 0.08f, 1.0f);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    // Atlas pixel-art (Minicraft/Minecraft-like)
-    init_texture_atlas();
-    glBindTexture(GL_TEXTURE_2D, 0);
-    return hrc;
-}
-
-// ============= Window Procedure =============
-// Variaveis para controle de camera com mouse
-static int g_last_mouse_x = 0;
-static int g_last_mouse_y = 0;
+// ============= Mouse / keyboard polling (raylib) =============
+// Migrated from WindowProc's WM_MOUSEWHEEL/WM_MBUTTONDOWN/WM_MBUTTONUP/WM_MOUSEMOVE/
+// WM_LBUTTONDOWN/WM_RBUTTONDOWN handlers, which used to run per Win32 message; raylib has no
+// message loop, so this runs once per frame instead, polling raylib's input state directly.
+// The WM_KEYDOWN handler's "ESC quits from the Menu state" branch was NOT ported: it was
+// already fully duplicated by ui_menu.cpp's update_menu_input() Menu-state block
+// ("if (esc_pressed) { g_quit = true; return true; }"), which update_game() still calls every
+// frame - so dropping the WindowProc copy loses no behavior.
 static bool g_mouse_captured = false;
 
-static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-        case WM_CLOSE:
-        case WM_DESTROY:
-            g_quit = true;
-            PostQuitMessage(0);
-            return 0;
-        case WM_SIZE:
-            return 0;
-        case WM_KEYDOWN:
-            if (wParam == VK_ESCAPE && g_state == GameState::Menu) {
-                g_quit = true;
-            }
-            return 0;
-        case WM_MOUSEWHEEL: {
-            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-
-            // Se mapa grande esta aberto, controlar zoom do mapa
-            if (g_minimap.world_map_open) {
-                float zoom_delta = (float)delta * 0.001f;
-                g_minimap.world_zoom += zoom_delta;
-                g_minimap.world_zoom = std::clamp(g_minimap.world_zoom,
-                    g_map_cfg.world_map_zoom_min, g_map_cfg.world_map_zoom_max);
-            } else {
-                // Zoom da camera com scroll do mouse
-                g_camera.distance -= (float)delta * 0.005f;
-                g_camera.distance = std::clamp(g_camera.distance, g_camera.min_distance, g_camera.max_distance);
-            }
-            return 0;
+static void process_input_events() {
+    // Mouse wheel: raylib's GetMouseWheelMove() returns ~1.0 per notch, versus Win32's
+    // GET_WHEEL_DELTA_WPARAM which returned ~120 per notch - the old 0.001f (map zoom) and
+    // 0.005f (camera distance) multipliers are rescaled ~120x here (0.001*120=0.12,
+    // 0.005*120=0.6) to preserve the same real-world zoom/distance change per wheel notch.
+    float wheel = GetMouseWheelMove();
+    if (wheel != 0.0f) {
+        if (g_minimap.world_map_open) {
+            float zoom_delta = wheel * 0.12f;
+            g_minimap.world_zoom += zoom_delta;
+            g_minimap.world_zoom = std::clamp(g_minimap.world_zoom,
+                g_map_cfg.world_map_zoom_min, g_map_cfg.world_map_zoom_max);
+        } else {
+            g_camera.distance -= wheel * 0.6f;
+            g_camera.distance = std::clamp(g_camera.distance, g_camera.min_distance, g_camera.max_distance);
         }
-        case WM_MBUTTONDOWN:
-            // Capturar mouse ao clicar com botao do meio para rotacionar camera
-            g_mouse_captured = true;
-            SetCapture(hwnd);
-            ShowCursor(FALSE);
-            return 0;
-        case WM_MBUTTONUP:
-            // Liberar mouse
-            g_mouse_captured = false;
-            ReleaseCapture();
-            ShowCursor(TRUE);
-            return 0;
-        case WM_RBUTTONDOWN:
-            // Clique direito do mouse - usado para construir (processado no update)
-            g_mouse_x = LOWORD(lParam);
-            g_mouse_y = HIWORD(lParam);
-            return 0;
-        case WM_LBUTTONDOWN:
-            // Clique esquerdo do mouse - usado para selecionar/minerar
-            g_mouse_left_clicked = true;
-            g_mouse_x = LOWORD(lParam);
-            g_mouse_y = HIWORD(lParam);
-            return 0;
-        case WM_MOUSEMOVE:
-            // Sempre atualiza posicao do mouse
-            g_mouse_x = LOWORD(lParam);
-            g_mouse_y = HIWORD(lParam);
-
-            if (g_mouse_captured && g_state == GameState::Playing) {
-                int mx = LOWORD(lParam);
-                int my = HIWORD(lParam);
-
-                int delta_x = mx - g_last_mouse_x;
-                int delta_y = my - g_last_mouse_y;
-
-                // Rotacionar camera (mouse direita = camera gira direita)
-                g_camera.yaw += delta_x * g_camera.sensitivity;
-                g_camera.pitch -= delta_y * g_camera.sensitivity * 0.5f;
-
-                // Clamp pitch
-                g_camera.pitch = std::clamp(g_camera.pitch, g_camera.min_pitch, g_camera.max_pitch);
-
-                // Normalizar yaw
-                while (g_camera.yaw >= 360.0f) g_camera.yaw -= 360.0f;
-                while (g_camera.yaw < 0.0f) g_camera.yaw += 360.0f;
-
-                // Recentrar o mouse
-                RECT rc;
-                GetClientRect(hwnd, &rc);
-                POINT center = { (rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2 };
-                ClientToScreen(hwnd, &center);
-                SetCursorPos(center.x, center.y);
-
-                ScreenToClient(hwnd, &center);
-                g_last_mouse_x = center.x;
-                g_last_mouse_y = center.y;
-            } else {
-                g_last_mouse_x = LOWORD(lParam);
-                g_last_mouse_y = HIWORD(lParam);
-            }
-            return 0;
     }
-    return DefWindowProcA(hwnd, msg, wParam, lParam);
+
+    // Middle mouse button: capture the cursor to rotate the camera, exactly like the old
+    // SetCapture/ShowCursor(FALSE) pair - DisableCursor()/EnableCursor() also hides the OS
+    // cursor and (on desktop platforms) keeps it centered, which is what let the original code
+    // compute a mouse delta by re-centering every frame; GetMouseDelta() gives that delta
+    // directly now, no manual recentring math needed.
+    if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)) {
+        g_mouse_captured = true;
+        DisableCursor();
+    }
+    if (IsMouseButtonReleased(MOUSE_BUTTON_MIDDLE)) {
+        g_mouse_captured = false;
+        EnableCursor();
+    }
+
+    if (g_mouse_captured && g_state == GameState::Playing) {
+        Vector2 delta = GetMouseDelta();
+        // Rotacionar camera (mouse direita = camera gira direita) - mesma matematica de
+        // sensitivity de antes.
+        g_camera.yaw += delta.x * g_camera.sensitivity;
+        g_camera.pitch -= delta.y * g_camera.sensitivity * 0.5f;
+
+        g_camera.pitch = std::clamp(g_camera.pitch, g_camera.min_pitch, g_camera.max_pitch);
+
+        while (g_camera.yaw >= 360.0f) g_camera.yaw -= 360.0f;
+        while (g_camera.yaw < 0.0f) g_camera.yaw += 360.0f;
+    }
+
+    // Sempre atualiza posicao do mouse (equivalente ao antigo WM_MOUSEMOVE, que sempre
+    // atualizava g_mouse_x/g_mouse_y mesmo fora da captura de camera).
+    Vector2 mouse_pos = GetMousePosition();
+    g_mouse_x = (int)mouse_pos.x;
+    g_mouse_y = (int)mouse_pos.y;
+
+    // Clique esquerdo/direito - flags de single-frame consumidos por update_game()/render_hud().
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        g_mouse_left_clicked = true;
+    }
 }
 
-// ============= WinMain =============
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
-    // Register window class
-    WNDCLASSA wc = {};
-    wc.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = WindowProc;
-    wc.hInstance = hInstance;
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.lpszClassName = "TerraFormer2DClass";
+// ============= main() =============
+int main() {
+    // FLAG_WINDOW_RESIZABLE precisa ser setado ANTES de InitWindow() - por padrao a raylib
+    // cria uma janela de tamanho fixo (diferente da janela Win32 original, que era
+    // redimensionavel via WS_OVERLAPPEDWINDOW).
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    InitWindow(1280, 720, "TerraFormer 2D");
+    SetWindowMinSize(640, 360);
 
-    if (!RegisterClassA(&wc)) {
-        MessageBoxA(nullptr, "Failed to register window class", "Error", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
-    // Create window
-    int win_w = 1280;
-    int win_h = 720;
-    RECT wr = {0, 0, win_w, win_h};
-    AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
-
-    HWND hwnd = CreateWindowA(
-        "TerraFormer2DClass",
-        "TerraFormer 2D",
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        wr.right - wr.left, wr.bottom - wr.top,
-        nullptr, nullptr, hInstance, nullptr);
-
-    if (!hwnd) {
-        MessageBoxA(nullptr, "Failed to create window", "Error", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
-    HDC hdc = GetDC(hwnd);
-    HGLRC hrc = setup_opengl(hdc);
-    init_font(hdc);
-
-    ShowWindow(hwnd, nCmdShow);
-    UpdateWindow(hwnd);
+    // Atlas pixel-art (Minicraft/Minecraft-like) + fonte padrao da raylib.
+    init_texture_atlas();
+    init_font();
 
     reload_physics_config(true);
     reload_terrain_config(true);
@@ -230,50 +136,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     g_cam_pos = g_player.pos;
     g_state = GameState::Menu;
 
-    // Timing
-    LARGE_INTEGER freq, last_time, cur_time;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&last_time);
+    // Main loop - raylib's own GetFrameTime() replaces the old manual QueryPerformanceCounter
+    // delta-time timing (idiomatic raylib, removes another chunk of Win32-specific code).
+    while (!WindowShouldClose() && !g_quit) {
+        float dt = std::clamp(GetFrameTime(), 0.0001f, 0.1f); // Clamp to avoid huge jumps
 
-    // Main loop
-    MSG msg;
-    while (!g_quit) {
-        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) {
-                g_quit = true;
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessageA(&msg);
-        }
-        if (g_quit) break;
-
-        // Calculate delta time
-        QueryPerformanceCounter(&cur_time);
-        float dt = (float)(cur_time.QuadPart - last_time.QuadPart) / (float)freq.QuadPart;
-        last_time = cur_time;
-        dt = std::clamp(dt, 0.0001f, 0.1f); // Clamp to avoid huge jumps
+        process_input_events();
 
         // Update
-        update_game(dt, hwnd);
+        update_game(dt);
 
         // Render
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        render_world(hdc, rc.right - rc.left, rc.bottom - rc.top);
-
-        // Small sleep to avoid 100% CPU
-        Sleep(1);
+        BeginDrawing();
+        render_world(GetScreenWidth(), GetScreenHeight());
+        EndDrawing();
     }
 
     // Cleanup
     delete g_world;
     g_world = nullptr;
 
-    wglMakeCurrent(nullptr, nullptr);
-    wglDeleteContext(hrc);
-    ReleaseDC(hwnd, hdc);
-    DestroyWindow(hwnd);
-
+    CloseWindow();
     return 0;
 }

@@ -1,6 +1,6 @@
 #include "ui_hud.h"
 
-#include "platform.h"
+#include "raylib_platform.h"
 #include "math_core.h"
 #include "blocks.h"
 #include "textures.h"
@@ -121,25 +121,44 @@ static void draw_hud_panel(float x, float y, float w, float h, float accent_r, f
 
 void render_hud(int win_w, int win_h) {
     // === MUDAR PARA PROJECAO 2D PARA HUD ===
-    glDisable(GL_FOG);
-    glDisable(GL_DEPTH_TEST);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrtho(0, win_w, win_h, 0, -1, 1);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    
+    // CRITICO (migracao raylib): rlgl NAO transforma vertices no momento de rlVertex3f() -
+    // ele so aplica RLGL.State.transform (rlPushMatrix/rlTranslatef, nao usado aqui) e guarda
+    // a posicao "crua" no vertex buffer da render batch. A projecao/view (modelview) so e
+    // aplicada quando a batch e efetivamente desenhada (rlDrawRenderBatch), usando o
+    // RLGL.State.projection/modelview *daquele momento* - nao o que estava ativo quando cada
+    // rlVertex3f foi chamado (ver rlgl.h: rlVertex3f so aplica RLGL.State.transform; o MVP e
+    // montado dentro de rlDrawRenderBatch a partir do estado atual). No OpenGL 1.x fixo
+    // original isso nunca foi um problema (cada glVertex era processado imediatamente pelo
+    // pipeline fixo, na ordem exata dos comandos). Sem um flush explicito aqui, toda a
+    // geometria 3D ainda pendente no buffer da render batch (terreno/paredes/player/outlines/
+    // beacon - render_world() acima, antes desta chamada) so seria de fato desenhada no
+    // EndDrawing() do loop principal (win32_platform.cpp) - momento em que a matriz ja teria
+    // sido trocada para a ortho 2D abaixo, fazendo aquela geometria 3D (coordenadas de mundo,
+    // ex.: x/z na faixa 0..512/0..256) ser interpretada como coordenadas de tela em pixels
+    // pela ortho, produzindo uma superficie/quad gigante e mal posicionada cobrindo boa parte
+    // da tela (e o player, com "size" de fracoes de unidade, ficando efetivamente invisivel/
+    // sub-pixel). rlDrawRenderBatchActive() forca o desenho de tudo que estiver pendente
+    // *agora*, enquanto a projecao/view 3D de render_world() ainda esta ativa, antes de trocar
+    // para a projecao 2D do HUD.
+    rlDrawRenderBatchActive();
+    g_frame_fog.enabled = false; // era glDisable(GL_FOG)
+    rlDisableDepthTest();
+    rlMatrixMode(RL_PROJECTION);
+    rlLoadIdentity();
+    rlOrtho(0, win_w, win_h, 0, -1, 1);
+    rlMatrixMode(RL_MODELVIEW);
+    rlLoadIdentity();
+
     // === VINHETA (RTX FAKE - efeito cinematico) ===
     if (g_lighting.enabled && g_lighting.vignette_intensity > 0.0f) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        
+        rlSetBlendMode(RL_BLEND_ALPHA);
+
         // Desenhar vinheta como gradiente radial usando quads
         float cx = win_w * 0.5f;
         float cy = win_h * 0.5f;
         float max_dist = std::sqrt(cx * cx + cy * cy);
         float vignette_start = g_lighting.vignette_radius * max_dist;
-        
+
         // Criar overlay de vinheta com gradiente
         int segments = 32;
         for (int ring = 0; ring < 8; ++ring) {
@@ -147,19 +166,33 @@ void render_hud(int win_w, int win_h) {
             float outer_r = vignette_start + (ring + 1) * (max_dist - vignette_start) / 8.0f;
             float inner_alpha = (float)ring / 8.0f * g_lighting.vignette_intensity;
             float outer_alpha = (float)(ring + 1) / 8.0f * g_lighting.vignette_intensity;
-            
-            glBegin(GL_QUAD_STRIP);
+
+            // GL_QUAD_STRIP -> RL_QUADS: buffer o par de vertices anterior (outer,inner) e,
+            // a partir da 2a iteracao, emite o quad (prev_outer, prev_inner, cur_inner,
+            // cur_outer) na mesma ordem que a strip original produziria.
+            rlBegin(RL_QUADS);
+            float prev_ox = 0, prev_oy = 0, prev_oa = 0;
+            float prev_ix = 0, prev_iy = 0, prev_ia = 0;
+            bool have_prev = false;
             for (int i = 0; i <= segments; ++i) {
                 float angle = (float)i / segments * 2.0f * kPi;
                 float cos_a = std::cos(angle);
                 float sin_a = std::sin(angle);
-                
-                glColor4f(0.0f, 0.0f, 0.0f, outer_alpha);
-                glVertex2f(cx + outer_r * cos_a, cy + outer_r * sin_a);
-                glColor4f(0.0f, 0.0f, 0.0f, inner_alpha);
-                glVertex2f(cx + inner_r * cos_a, cy + inner_r * sin_a);
+
+                float ox = cx + outer_r * cos_a, oy = cy + outer_r * sin_a;
+                float ix = cx + inner_r * cos_a, iy = cy + inner_r * sin_a;
+
+                if (have_prev) {
+                    rlColor4f(0.0f, 0.0f, 0.0f, prev_oa); rlVertex2f(prev_ox, prev_oy);
+                    rlColor4f(0.0f, 0.0f, 0.0f, prev_ia); rlVertex2f(prev_ix, prev_iy);
+                    rlColor4f(0.0f, 0.0f, 0.0f, inner_alpha); rlVertex2f(ix, iy);
+                    rlColor4f(0.0f, 0.0f, 0.0f, outer_alpha); rlVertex2f(ox, oy);
+                }
+                prev_ox = ox; prev_oy = oy; prev_oa = outer_alpha;
+                prev_ix = ix; prev_iy = iy; prev_ia = inner_alpha;
+                have_prev = true;
             }
-            glEnd();
+            rlEnd();
         }
     }
     
@@ -171,14 +204,14 @@ void render_hud(int win_w, int win_h) {
         float cell_size = debug_size / kLightmapSize;
         
         // Fundo
-        glColor4f(0.0f, 0.0f, 0.0f, 0.8f);
-        glBegin(GL_QUADS);
-        glVertex2f(debug_x - 5, debug_y - 5);
-        glVertex2f(debug_x + debug_size + 5, debug_y - 5);
-        glVertex2f(debug_x + debug_size + 5, debug_y + debug_size + 5);
-        glVertex2f(debug_x - 5, debug_y + debug_size + 5);
-        glEnd();
-        
+        rlBegin(RL_QUADS);
+        rlColor4f(0.0f, 0.0f, 0.0f, 0.8f);
+        rlVertex2f(debug_x - 5, debug_y - 5);
+        rlVertex2f(debug_x + debug_size + 5, debug_y - 5);
+        rlVertex2f(debug_x + debug_size + 5, debug_y + debug_size + 5);
+        rlVertex2f(debug_x - 5, debug_y + debug_size + 5);
+        rlEnd();
+
         // Lightmap pixels
         for (int z = 0; z < kLightmapSize; ++z) {
             for (int x = 0; x < kLightmapSize; ++x) {
@@ -186,16 +219,16 @@ void render_hud(int win_w, int win_h) {
                 float r = std::min(1.0f, g_lightmap_r[idx]);
                 float g = std::min(1.0f, g_lightmap_g[idx]);
                 float b = std::min(1.0f, g_lightmap_b[idx]);
-                
-                glColor3f(r, g, b);
+
                 float px = debug_x + x * cell_size;
                 float py = debug_y + z * cell_size;
-                glBegin(GL_QUADS);
-                glVertex2f(px, py);
-                glVertex2f(px + cell_size, py);
-                glVertex2f(px + cell_size, py + cell_size);
-                glVertex2f(px, py + cell_size);
-                glEnd();
+                rlBegin(RL_QUADS);
+                rlColor4f(r, g, b, 1.0f);
+                rlVertex2f(px, py);
+                rlVertex2f(px + cell_size, py);
+                rlVertex2f(px + cell_size, py + cell_size);
+                rlVertex2f(px, py + cell_size);
+                rlEnd();
             }
         }
         
@@ -228,30 +261,28 @@ void render_hud(int win_w, int win_h) {
         float cross_thick = 2.0f;
         
         // Contorno preto
-        glColor4f(0.0f, 0.0f, 0.0f, 0.7f);
-        glLineWidth(cross_thick + 2.0f);
-        glBegin(GL_LINES);
-        glVertex2f(cx - cross_size, cy);
-        glVertex2f(cx + cross_size, cy);
-        glVertex2f(cx, cy - cross_size);
-        glVertex2f(cx, cy + cross_size);
-        glEnd();
-        
+        rlSetLineWidth(cross_thick + 2.0f);
+        rlBegin(RL_LINES);
+        rlColor4f(0.0f, 0.0f, 0.0f, 0.7f);
+        rlVertex2f(cx - cross_size, cy);
+        rlVertex2f(cx + cross_size, cy);
+        rlVertex2f(cx, cy - cross_size);
+        rlVertex2f(cx, cy + cross_size);
+        rlEnd();
+
         // Crosshair branco
-        glColor4f(1.0f, 1.0f, 1.0f, 0.9f);
-        glLineWidth(cross_thick);
-        glBegin(GL_LINES);
-        glVertex2f(cx - cross_size, cy);
-        glVertex2f(cx + cross_size, cy);
-        glVertex2f(cx, cy - cross_size);
-        glVertex2f(cx, cy + cross_size);
-        glEnd();
-        
-        // Ponto central
-        glPointSize(4.0f);
-        glBegin(GL_POINTS);
-        glVertex2f(cx, cy);
-        glEnd();
+        rlSetLineWidth(cross_thick);
+        rlBegin(RL_LINES);
+        rlColor4f(1.0f, 1.0f, 1.0f, 0.9f);
+        rlVertex2f(cx - cross_size, cy);
+        rlVertex2f(cx + cross_size, cy);
+        rlVertex2f(cx, cy - cross_size);
+        rlVertex2f(cx, cy + cross_size);
+        rlEnd();
+
+        // Ponto central (GL_POINTS de 1 ponto -> DrawCircle, mais simples que reconstruir
+        // um quad billboard 2D para um unico pixel de tela).
+        DrawCircle((int)cx, (int)cy, 2.0f, WHITE);
     }
 
     // HUD
@@ -317,7 +348,8 @@ void render_hud(int win_w, int win_h) {
             float tw1 = estimate_text_w_px(line1);
             float tw2 = estimate_text_w_px(line2);
             float box_w = std::max(tw1, tw2) + 30.0f;
-            float box_h = 38.0f;
+            float box_h = 46.0f;  // um pouco mais alta: a metrica real da Consolas via raylib
+                                  // e um pouco mais alta que o bitmap GDI antigo
             float box_x = win_w * 0.5f - box_w * 0.5f;
             float box_y = 46.0f;
 
@@ -326,9 +358,9 @@ void render_hud(int win_w, int win_h) {
             float border_b = all_done ? 0.50f : 0.55f;
             draw_hud_panel(box_x, box_y, box_w, box_h, border_r, border_g, border_b);
 
-            draw_text(win_w * 0.5f - tw1 * 0.5f, box_y + 15.0f, line1,
+            draw_text(win_w * 0.5f - tw1 * 0.5f, box_y + 17.0f, line1,
                 kColorSuccess[0], kColorSuccess[1], kColorSuccess[2], 0.95f);
-            draw_text(win_w * 0.5f - tw2 * 0.5f, box_y + 31.0f, line2,
+            draw_text(win_w * 0.5f - tw2 * 0.5f, box_y + 35.0f, line2,
                 kColorTextSecondary[0], kColorTextSecondary[1], kColorTextSecondary[2], 0.90f);
         }
 
@@ -529,12 +561,12 @@ void render_hud(int win_w, int win_h) {
                 // Cor pulsante para seta
                 float pulse = 0.7f + 0.3f * std::sin(g_day_time * 3.0f);
                 
-                glBegin(GL_TRIANGLES);
-                glColor4f(0.3f * pulse, 0.8f * pulse, 1.0f * pulse, 0.9f);
-                glVertex2f(tip_x, tip_y);
-                glVertex2f(arrow_cx - nx * arrow_size * 0.3f + perp_x, arrow_cy - ny * arrow_size * 0.3f + perp_y);
-                glVertex2f(arrow_cx - nx * arrow_size * 0.3f - perp_x, arrow_cy - ny * arrow_size * 0.3f - perp_y);
-                glEnd();
+                rlBegin(RL_TRIANGLES);
+                rlColor4f(0.3f * pulse, 0.8f * pulse, 1.0f * pulse, 0.9f);
+                rlVertex2f(tip_x, tip_y);
+                rlVertex2f(arrow_cx - nx * arrow_size * 0.3f + perp_x, arrow_cy - ny * arrow_size * 0.3f + perp_y);
+                rlVertex2f(arrow_cx - nx * arrow_size * 0.3f - perp_x, arrow_cy - ny * arrow_size * 0.3f - perp_y);
+                rlEnd();
             }
             
             // Tecla de atalho
@@ -587,21 +619,19 @@ void render_hud(int win_w, int win_h) {
                     if (bt.transparent) alpha = ca;
                 }
 
-                glEnable(GL_TEXTURE_2D);
-                glBindTexture(GL_TEXTURE_2D, g_tex_atlas);
+                // render_quad_tex (DrawTexturePro) gerencia seu proprio bind de textura -
+                // nao precisa mais de glEnable/glBindTexture/glDisable ao redor.
                 render_quad_tex(ix, iy, icon_size, icon_size * 0.5f, bt.top, tint_r, tint_g, tint_b, 0.98f * alpha);
                 render_quad_tex(ix, iy + icon_size * 0.5f, icon_size, icon_size * 0.5f, bt.side,
                                 tint_r * 0.75f, tint_g * 0.75f, tint_b * 0.75f, 0.98f * alpha);
-                glBindTexture(GL_TEXTURE_2D, 0);
-                glDisable(GL_TEXTURE_2D);
 
                 // Linha de divisao
-                glLineWidth(1.0f);
-                glColor4f(0.0f, 0.0f, 0.0f, 0.5f);
-                glBegin(GL_LINES);
-                glVertex2f(ix, iy + icon_size * 0.5f);
-                glVertex2f(ix + icon_size, iy + icon_size * 0.5f);
-                glEnd();
+                rlSetLineWidth(1.0f);
+                rlBegin(RL_LINES);
+                rlColor4f(0.0f, 0.0f, 0.0f, 0.5f);
+                rlVertex2f(ix, iy + icon_size * 0.5f);
+                rlVertex2f(ix + icon_size, iy + icon_size * 0.5f);
+                rlEnd();
             } else {
                 float r, g, bl, a;
                 block_color(block, 128, 256, r, g, bl, a);
@@ -610,12 +640,12 @@ void render_hud(int win_w, int win_h) {
                 // Face frontal (mais escura)
                 render_quad(ix, iy + icon_size * 0.5f, icon_size, icon_size * 0.5f, r * 0.7f, g * 0.7f, bl * 0.7f, 0.98f);
                 // Linha de divisao
-                glLineWidth(1.0f);
-                glColor4f(0.0f, 0.0f, 0.0f, 0.5f);
-                glBegin(GL_LINES);
-                glVertex2f(ix, iy + icon_size * 0.5f);
-                glVertex2f(ix + icon_size, iy + icon_size * 0.5f);
-                glEnd();
+                rlSetLineWidth(1.0f);
+                rlBegin(RL_LINES);
+                rlColor4f(0.0f, 0.0f, 0.0f, 0.5f);
+                rlVertex2f(ix, iy + icon_size * 0.5f);
+                rlVertex2f(ix + icon_size, iy + icon_size * 0.5f);
+                rlEnd();
             }
              
             // Numero da tecla (canto superior esquerdo)
@@ -783,11 +813,8 @@ void render_hud(int win_w, int win_h) {
                         if (bt.transparent) icon_a = ca;
                     }
 
-                    glEnable(GL_TEXTURE_2D);
-                    glBindTexture(GL_TEXTURE_2D, g_tex_atlas);
+                    // render_quad_tex (DrawTexturePro) gerencia seu proprio bind de textura.
                     render_quad_tex(tx, py - 12.0f, icon_sz, icon_sz, bt.top, tint_r, tint_g, tint_b, 0.98f * alpha * icon_a);
-                    glBindTexture(GL_TEXTURE_2D, 0);
-                    glDisable(GL_TEXTURE_2D);
 
                     tx += icon_sz + gap;
                 }

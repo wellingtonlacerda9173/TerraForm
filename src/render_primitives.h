@@ -23,7 +23,28 @@ void render_rounded_rect(float x, float y, float w, float h, float radius, float
 
 void render_cube_outline_3d(float x, float y, float z, float size, float line_width = 1.5f);
 void render_cube_3d(float x, float y, float z, float size, float r, float g, float b, float a = 1.0f, bool outline = false);
-void render_sphere_3d(float cx, float cy, float cz, float radius, float r, float g, float b, float a = 1.0f, int segments = 12);
+// render_sphere_3d removed (raylib migration): confirmed dead code, zero call sites anywhere
+// in src/ - see the migration plan for details.
+
+// ============= Per-frame fog parameters (raylib migration) =============
+// Legacy OpenGL fixed-function fog (glFogf/glFogi/glFogfv, enabled for the whole terrain/
+// object/player/beacon render pass in main.cpp's render_world()) has no rlgl/raylib
+// equivalent. render_world() computes the fog color/start/end once per frame (same values the
+// old glFogfv/glFogf calls used) and stores them here; render_cube_3d()/render_wall_3d_tex()
+// (this file) and the local render_plane_3d()/render_plane_3d_tex()/render_cube_3d_tex()
+// functions in main.cpp all read this to manually lerp their face colors toward the fog color
+// based on distance from the camera, reproducing the old per-pixel GL_LINEAR fog effect (as a
+// per-quad/per-face approximation using each shape's center position instead of true
+// per-vertex distance - see the migration report for why this is an acceptable simplification).
+// render_world() resets fog.enabled=false once the fogged region of the frame ends (mirrors
+// the original glDisable(GL_FOG) inside ui_hud.cpp's render_hud()/sky.cpp's render_alien_sky()).
+struct FrameFogParams {
+    bool enabled = false;
+    float start = 0.0f;
+    float end = 1000.0f;
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+};
+extern FrameFogParams g_frame_fog;
 
 // Parede vertical texturizada (para diferenca de altura entre tiles vizinhos). Antes eram 4
 // funcoes quase identicas (render_wall_3d_tex_xpos/xneg/zpos/zneg), uma por face/eixo

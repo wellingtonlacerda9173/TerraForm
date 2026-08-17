@@ -1,6 +1,14 @@
 #pragma once
 
-#include "platform.h"   // GLuint used by MiniMapRuntime::texture; also brings in <string>/<vector>
+// NOTE: this header is included by both raylib-migrated files (camera.cpp, sky.cpp,
+// minimap.cpp, ui_hud.cpp, ui_menu.cpp, building_interaction.cpp, win32_platform.cpp,
+// main.cpp - via raylib_platform.h) and any remaining legacy files - it must not include
+// platform.h (windows.h + GL/gl.h) or raylib_platform.h itself, since raylib.h and windows.h
+// cannot both be visible in the same translation unit (see raylib_platform.h's own comment).
+// It only needs plain STL types.
+#include <string>
+#include <vector>
+#include <cstdint>
 
 // ============= Config struct definitions =============
 // Extracted verbatim from main.cpp (original lines ~1017-1237).
@@ -277,7 +285,7 @@ struct MiniMapRuntime {
     std::vector<uint8_t> explored;
     std::vector<uint8_t> pixels;
     std::vector<MapWaypoint> waypoints;
-    GLuint texture = 0;
+    unsigned int texture = 0;
     int tex_w = 0;
     int tex_h = 0;
     bool dirty_full = true;

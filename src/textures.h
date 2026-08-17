@@ -1,6 +1,5 @@
 #pragma once
 
-#include "platform.h"   // GLuint, GL/gl.h types used by g_tex_atlas / init_texture_atlas
 #include "blocks.h"      // Block
 
 // ============= TEXTURAS (ESTILO MINICRAFT / PIXEL ART) =============
@@ -70,11 +69,25 @@ struct UvRect {
     float u0, v0, u1, v1;
 };
 
+// Atlas pixel dimensions (256x256 = 16x16 tiles of 16px each). Exposed so callers who need
+// pixel-space rectangles (render_quad_tex's DrawTexturePro path in render_primitives.cpp) can
+// convert atlas_uv()'s normalized output without duplicating the atlas layout constant.
+constexpr int kAtlasSizePx = 256;
+
+// Returns the tile's texture-atlas rectangle as normalized (0..1) UV coordinates, in the
+// same bottom-origin convention the original OpenGL fixed-function code used (see
+// tile_set_px() below): v1 corresponds to the top of the tile's artwork, v0 to the bottom.
+// This convention is unchanged by the raylib migration and stays the single source of truth
+// for atlas coordinates - both the manual rlgl 3D texturing paths (render_wall_3d_tex,
+// render_cube_3d_tex, render_plane_3d_tex, all using rlTexCoord2f with these same normalized
+// values exactly as before) and the 2D render_quad_tex path (which converts this rect to a
+// pixel-space raylib Rectangle with a negative height to reproduce the same v1->v0 sampling
+// direction - see render_quad_tex in render_primitives.cpp) read directly from here.
 UvRect atlas_uv(Tile t);
 
 void init_texture_atlas();
 
-extern GLuint g_tex_atlas;
+extern unsigned int g_tex_atlas;
 
 struct BlockTex {
     Tile top = Tile::Missing;

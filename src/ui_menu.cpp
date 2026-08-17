@@ -1,6 +1,6 @@
 #include "ui_menu.h"
 
-#include "platform.h"
+#include "raylib_platform.h"
 #include "math_core.h"
 #include "blocks.h"
 #include "game_state.h"
@@ -348,10 +348,9 @@ void render_menus(int win_w, int win_h) {
 // extern here).
 static const char* kSavePath = "save_slot0.tf2d";
 
-bool update_menu_input(float dt, HWND hwnd, bool esc_pressed, bool enter_pressed,
+bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
                         bool f5_pressed, bool f9_pressed, bool l_pressed, bool q_pressed) {
     (void)dt;
-    (void)hwnd;
 
     if (g_state == GameState::Menu) {
         // Clique do mouse nos botoes do menu principal
@@ -360,7 +359,7 @@ bool update_menu_input(float dt, HWND hwnd, bool esc_pressed, bool enter_pressed
             switch (g_menu_selection) {
                 case 0:  // Novo Jogo
                     delete g_world;
-                    g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)GetTickCount());
+                    g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)(GetTime() * 1000000.0));
                     spawn_player_new_game(*g_world);
                     g_cam_pos = g_player.pos;
                     g_day_time = kDayLength * 0.25f;
@@ -396,7 +395,7 @@ bool update_menu_input(float dt, HWND hwnd, bool esc_pressed, bool enter_pressed
         }
         if (enter_pressed) {
             delete g_world;
-            g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)GetTickCount());
+            g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)(GetTime() * 1000000.0));
             spawn_player_new_game(*g_world);  // This sets O2, water, etc. to 100%
             g_cam_pos = g_player.pos;
             g_day_time = kDayLength * 0.25f;  // Start at morning
@@ -469,7 +468,7 @@ bool update_menu_input(float dt, HWND hwnd, bool esc_pressed, bool enter_pressed
             return true;
         }
         // Tecla 'O' abre configuracoes
-        if (GetAsyncKeyState('O') & 0x8000) {
+        if (IsKeyDown(KEY_O)) {
             static bool o_was_pressed = false;
             if (!o_was_pressed) {
                 g_state = GameState::Settings;
@@ -504,10 +503,10 @@ bool update_menu_input(float dt, HWND hwnd, bool esc_pressed, bool enter_pressed
         static bool key_a_held = false;
         static bool key_d_held = false;
 
-        bool w_now = (GetAsyncKeyState('W') & 0x8000) != 0;
-        bool s_now = (GetAsyncKeyState('S') & 0x8000) != 0;
-        bool a_now = (GetAsyncKeyState('A') & 0x8000) != 0;
-        bool d_now = (GetAsyncKeyState('D') & 0x8000) != 0;
+        bool w_now = IsKeyDown(KEY_W);
+        bool s_now = IsKeyDown(KEY_S);
+        bool a_now = IsKeyDown(KEY_A);
+        bool d_now = IsKeyDown(KEY_D);
 
         // Navegar para cima
         if (w_now && !key_w_held) {
@@ -523,7 +522,7 @@ bool update_menu_input(float dt, HWND hwnd, bool esc_pressed, bool enter_pressed
 
         // F3 para debug lightmap
         static bool f3_held = false;
-        bool f3_now = (GetAsyncKeyState(VK_F3) & 0x8000) != 0;
+        bool f3_now = IsKeyDown(KEY_F3);
         if (f3_now && !f3_held) {
             g_debug_lightmap = !g_debug_lightmap;
         }
@@ -581,7 +580,7 @@ bool update_menu_input(float dt, HWND hwnd, bool esc_pressed, bool enter_pressed
         // Death screen - wait for Enter to start new game
         if (enter_pressed) {
             delete g_world;
-            g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)GetTickCount());
+            g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)(GetTime() * 1000000.0));
             spawn_player_new_game(*g_world);
             g_cam_pos = g_player.pos;
             g_day_time = kDayLength * 0.25f;

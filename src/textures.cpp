@@ -1,5 +1,6 @@
 #include "textures.h"
 
+#include "raylib_platform.h"
 #include "math_core.h"   // clamp01
 #include "noise.h"       // lerp
 
@@ -102,10 +103,12 @@ void block_color(Block b, int y, int world_h, float& r, float& g, float& bl, flo
 
 // ============= TEXTURAS (ESTILO MINICRAFT / PIXEL ART) =============
 // Sem assets externos: atlas gerado proceduralmente em tempo de execucao.
-GLuint g_tex_atlas = 0;
+unsigned int g_tex_atlas = 0;
 static constexpr int kAtlasTileSize = 16;
 static constexpr int kAtlasTilesPerRow = 16;
-static constexpr int kAtlasSizePx = kAtlasTileSize * kAtlasTilesPerRow; // 256x256
+// kAtlasSizePx (256 = kAtlasTileSize * kAtlasTilesPerRow) is now the single copy exposed via
+// textures.h (render_primitives.cpp needs it too); this file just uses that same constant.
+static_assert(kAtlasSizePx == kAtlasTileSize * kAtlasTilesPerRow, "kAtlasSizePx mismatch");
 
 struct Color8 {
     uint8_t r, g, b, a;
@@ -370,15 +373,17 @@ void init_texture_atlas() {
     std::vector<uint8_t> pixels;
     tile_generate_all(pixels);
 
-    glGenTextures(1, &g_tex_atlas);
-    glBindTexture(GL_TEXTURE_2D, g_tex_atlas);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, kAtlasSizePx, kAtlasSizePx, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    Image img{};
+    img.data = pixels.data();
+    img.width = kAtlasSizePx;
+    img.height = kAtlasSizePx;
+    img.mipmaps = 1;
+    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+
+    Texture2D tex = LoadTextureFromImage(img); // copies pixels into a GPU texture
+    SetTextureFilter(tex, TEXTURE_FILTER_POINT);   // matches the old GL_NEAREST
+    SetTextureWrap(tex, TEXTURE_WRAP_CLAMP);       // matches the old GL_CLAMP
+    g_tex_atlas = tex.id;
 }
 
 BlockTex block_tex(Block b) {

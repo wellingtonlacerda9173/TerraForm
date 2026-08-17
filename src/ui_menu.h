@@ -1,7 +1,5 @@
 #pragma once
 
-#include "platform.h"   // HWND (update_menu_input's signature mirrors update_game's)
-
 // ============= Menu System (Paused / Main Menu / Dead / Settings) =============
 // Extracted verbatim from main.cpp: the render side (original render_world() lines
 // ~1715-1974: the darkened-background overlay, the inline draw_mc_button()/mouse_in_rect()
@@ -36,5 +34,9 @@ void render_menus(int win_w, int win_h);
 // the end of each of those four blocks) - update_game() should itself return immediately when
 // this is true, exactly as before. Returns false when g_state is Playing (no menu block
 // matched), meaning update_game() should fall through to its own Playing-state input code.
-bool update_menu_input(float dt, HWND hwnd, bool esc_pressed, bool enter_pressed,
+//
+// Dropped the HWND parameter (raylib migration): the original signature only carried it to
+// mirror update_game()'s own HWND, but grep confirmed the body never used it (`(void)hwnd;`) -
+// update_game() itself lost its HWND for the same reason (step 5 of the migration).
+bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
                         bool f5_pressed, bool f9_pressed, bool l_pressed, bool q_pressed);

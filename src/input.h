@@ -1,7 +1,5 @@
 #pragma once
 
-#include "platform.h"
-
 // ============= Input (raw keyboard polling) =============
 // Extracted verbatim from main.cpp (original lines ~1787-1796): the two lowest-level
 // keyboard-polling primitives used throughout gameplay/menu/building-interaction input

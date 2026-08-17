@@ -1,13 +1,14 @@
-#include "platform.h"
+#include "raylib_platform.h"
 #include "sky.h"
 
 #include "math_core.h"          // Vec3, kPi, clamp01, smoothstep01, compute_daylight, compute_night_alpha
 #include "noise.h"              // lerp, perlin
-#include "camera.h"             // Camera3D, g_camera
+#include "camera.h"             // GameCamera, g_camera
 #include "config_types.h"       // SkyConfig (type of g_sky_cfg below)
 #include "items_particles.h"    // ShootingStar (type only - g_shooting_stars itself is NOT
                                  // declared extern there, see comment below)
 #include "game_state.h"         // rng_next_u32, rng_next_f01
+#include "render_primitives.h"  // g_frame_fog (glDisable(GL_FOG) replacement)
 
 #include <algorithm>
 #include <cmath>
@@ -80,14 +81,19 @@ SkyPalette compute_sky_palette(float day_phase, float atmos_factor) {
     return p;
 }
 
+// GL_TRIANGLE_STRIP decomposition: buffer the previous (outer,inner) vertex pair, then from
+// the 2nd angle step onward emit 2 explicit RL_TRIANGLES matching the exact vertex order a
+// GL_TRIANGLE_STRIP of this same vertex sequence would have produced - see the migration
+// plan's "GL_TRIANGLE_STRIP -> same pair-buffering, decomposed into 2 explicit RL_TRIANGLES
+// per step" guidance.
 static void render_sky_gradient_dome(float cam_x, float cam_z, const SkyPalette& p) {
     constexpr int kRings = 18;
     constexpr int kSegs = 64;
     constexpr float kRadius = 1850.0f;
     constexpr float kBaseY = -120.0f;
 
-    glDisable(GL_TEXTURE_2D);
-    glDisable(GL_DEPTH_TEST);
+    rlSetTexture(0);
+    rlDisableDepthTest();
 
     for (int ring = 0; ring < kRings; ++ring) {
         float t0 = (float)ring / (float)kRings;
@@ -108,20 +114,38 @@ static void render_sky_gradient_dome(float cam_x, float cam_z, const SkyPalette&
         float c1g = lerp(p.hz_g, p.zn_g, c1);
         float c1b = lerp(p.hz_b, p.zn_b, c1);
 
-        glBegin(GL_TRIANGLE_STRIP);
+        rlBegin(RL_TRIANGLES);
+        float prev_ox = 0, prev_oy = 0, prev_oz = 0, prev_or = 0, prev_og = 0, prev_ob = 0;
+        float prev_ix = 0, prev_iy = 0, prev_iz = 0, prev_ir = 0, prev_ig = 0, prev_ib = 0;
+        bool have_prev = false;
         for (int i = 0; i <= kSegs; ++i) {
             float a = (float)i / (float)kSegs * 2.0f * kPi;
             float ca = std::cos(a);
             float sa = std::sin(a);
-            glColor4f(c1r, c1g, c1b, 1.0f);
-            glVertex3f(cam_x + ca * r1, y1, cam_z + sa * r1);
-            glColor4f(c0r, c0g, c0b, 1.0f);
-            glVertex3f(cam_x + ca * r0, y0, cam_z + sa * r0);
+            float ox = cam_x + ca * r1, oy = y1, oz = cam_z + sa * r1; // outer (era c1)
+            float ix = cam_x + ca * r0, iy = y0, iz = cam_z + sa * r0; // inner (era c0)
+
+            if (have_prev) {
+                // Triangulo 1: outer_prev, inner_prev, outer_cur
+                rlColor4f(prev_or, prev_og, prev_ob, 1.0f); rlVertex3f(prev_ox, prev_oy, prev_oz);
+                rlColor4f(prev_ir, prev_ig, prev_ib, 1.0f); rlVertex3f(prev_ix, prev_iy, prev_iz);
+                rlColor4f(c1r, c1g, c1b, 1.0f); rlVertex3f(ox, oy, oz);
+                // Triangulo 2: inner_prev, outer_cur, inner_cur
+                rlColor4f(prev_ir, prev_ig, prev_ib, 1.0f); rlVertex3f(prev_ix, prev_iy, prev_iz);
+                rlColor4f(c1r, c1g, c1b, 1.0f); rlVertex3f(ox, oy, oz);
+                rlColor4f(c0r, c0g, c0b, 1.0f); rlVertex3f(ix, iy, iz);
+            }
+            prev_ox = ox; prev_oy = oy; prev_oz = oz; prev_or = c1r; prev_og = c1g; prev_ob = c1b;
+            prev_ix = ix; prev_iy = iy; prev_iz = iz; prev_ir = c0r; prev_ig = c0g; prev_ib = c0b;
+            have_prev = true;
         }
-        glEnd();
+        rlEnd();
     }
 }
 
+// GL_TRIANGLE_FAN decomposition: buffer the fan's vertices (position+color) first, then
+// re-emit as explicit RL_TRIANGLES triples (center, v[i], v[i+1]) for each consecutive pair -
+// per the migration plan.
 static void render_billboard_disc(const Vec3& center, float radius, float r, float g, float b, float a, int segments = 28) {
     Vec3 to_cam = vec3_sub(g_camera.position, center);
     if (vec3_length(to_cam) < 0.001f) to_cam = {0.0f, 0.0f, 1.0f};
@@ -132,20 +156,30 @@ static void render_billboard_disc(const Vec3& center, float radius, float r, flo
     right = vec3_normalize(right);
     Vec3 disc_up = vec3_normalize(vec3_cross(to_cam, right));
 
-    glBegin(GL_TRIANGLE_FAN);
-    glColor4f(r, g, b, a);
-    glVertex3f(center.x, center.y, center.z);
+    std::vector<Vec3> rim(segments + 1);
     for (int i = 0; i <= segments; ++i) {
         float ang = (float)i / (float)segments * 2.0f * kPi;
         float ca = std::cos(ang);
         float sa = std::sin(ang);
-        Vec3 p = vec3_add(center, vec3_add(vec3_scale(right, ca * radius), vec3_scale(disc_up, sa * radius)));
-        glColor4f(r, g, b, 0.0f);
-        glVertex3f(p.x, p.y, p.z);
+        rim[i] = vec3_add(center, vec3_add(vec3_scale(right, ca * radius), vec3_scale(disc_up, sa * radius)));
     }
-    glEnd();
+
+    rlBegin(RL_TRIANGLES);
+    for (int i = 0; i < segments; ++i) {
+        rlColor4f(r, g, b, a);
+        rlVertex3f(center.x, center.y, center.z);
+        rlColor4f(r, g, b, 0.0f);
+        rlVertex3f(rim[i].x, rim[i].y, rim[i].z);
+        rlColor4f(r, g, b, 0.0f);
+        rlVertex3f(rim[i + 1].x, rim[i + 1].y, rim[i + 1].z);
+    }
+    rlEnd();
 }
 
+// GL_QUAD_STRIP decomposition: buffer the previous (top,bottom) vertex pair, then from the
+// 2nd longitude step onward emit an RL_QUADS block using (prev_pair, current_pair) in the
+// exact same vertex order a GL_QUAD_STRIP of this sequence would have produced - per the
+// migration plan.
 static void render_lit_sphere(const Vec3& center, float radius, const Vec3& light_dir, const Vec3& view_pos,
                               float base_r, float base_g, float base_b, float alpha,
                               float ambient, float diffuse_mul, float spec_mul,
@@ -162,13 +196,19 @@ static void render_lit_sphere(const Vec3& center, float radius, const Vec3& ligh
         float r0 = std::cos(p0);
         float r1 = std::cos(p1);
 
-        glBegin(GL_QUAD_STRIP);
+        rlBegin(RL_QUADS);
+        Vec3 prev_top{}, prev_bot{};
+        float prev_top_c[4] = {0,0,0,0}, prev_bot_c[4] = {0,0,0,0};
+        bool have_prev = false;
         for (int lon = 0; lon <= lon_seg; ++lon) {
             float u = (float)lon / (float)lon_seg * 2.0f * kPi;
             float cu = std::cos(u);
             float su = std::sin(u);
 
-            auto emit = [&](float rr, float yy) {
+            Vec3 cur_top{}, cur_bot{};
+            float cur_top_c[4], cur_bot_c[4];
+
+            auto compute = [&](float rr, float yy, Vec3& out_p, float out_c[4]) {
                 Vec3 n = vec3_normalize({cu * rr, yy, su * rr});
                 Vec3 p = vec3_add(center, vec3_scale(n, radius));
                 float ndl = std::max(0.0f, vec3_dot(n, ldir));
@@ -180,18 +220,53 @@ static void render_lit_sphere(const Vec3& center, float radius, const Vec3& ligh
                     nvar = (perlin(p.x * noise_freq + 133.0f, p.z * noise_freq + 617.0f) - 0.5f) * noise_amp;
                 }
                 float lit = std::max(0.0f, ambient + ndl * diffuse_mul + nvar);
-                float cr = clamp01(base_r * lit + spec);
-                float cg = clamp01(base_g * lit + spec * 0.95f);
-                float cb = clamp01(base_b * lit + spec * 0.90f);
-                glColor4f(cr, cg, cb, alpha);
-                glVertex3f(p.x, p.y, p.z);
+                out_c[0] = clamp01(base_r * lit + spec);
+                out_c[1] = clamp01(base_g * lit + spec * 0.95f);
+                out_c[2] = clamp01(base_b * lit + spec * 0.90f);
+                out_c[3] = alpha;
+                out_p = p;
             };
 
-            emit(r1, y1);
-            emit(r0, y0);
+            compute(r1, y1, cur_top, cur_top_c);
+            compute(r0, y0, cur_bot, cur_bot_c);
+
+            if (have_prev) {
+                rlColor4f(prev_top_c[0], prev_top_c[1], prev_top_c[2], prev_top_c[3]); rlVertex3f(prev_top.x, prev_top.y, prev_top.z);
+                rlColor4f(prev_bot_c[0], prev_bot_c[1], prev_bot_c[2], prev_bot_c[3]); rlVertex3f(prev_bot.x, prev_bot.y, prev_bot.z);
+                rlColor4f(cur_bot_c[0], cur_bot_c[1], cur_bot_c[2], cur_bot_c[3]); rlVertex3f(cur_bot.x, cur_bot.y, cur_bot.z);
+                rlColor4f(cur_top_c[0], cur_top_c[1], cur_top_c[2], cur_top_c[3]); rlVertex3f(cur_top.x, cur_top.y, cur_top.z);
+            }
+            prev_top = cur_top; prev_top_c[0]=cur_top_c[0]; prev_top_c[1]=cur_top_c[1]; prev_top_c[2]=cur_top_c[2]; prev_top_c[3]=cur_top_c[3];
+            prev_bot = cur_bot; prev_bot_c[0]=cur_bot_c[0]; prev_bot_c[1]=cur_bot_c[1]; prev_bot_c[2]=cur_bot_c[2]; prev_bot_c[3]=cur_bot_c[3];
+            have_prev = true;
         }
-        glEnd();
+        rlEnd();
     }
+}
+
+// GL_POINTS decomposition: each star becomes a tiny camera-facing RL_QUADS billboard quad
+// sized to roughly match the original glPointSize(1.4f) - per the migration plan.
+static void render_point_billboard(float x, float y, float z, float half_size, float r, float g, float b, float a) {
+    Vec3 center{x, y, z};
+    Vec3 to_cam = vec3_sub(g_camera.position, center);
+    if (vec3_length(to_cam) < 0.001f) to_cam = {0.0f, 0.0f, 1.0f};
+    to_cam = vec3_normalize(to_cam);
+    Vec3 up = {0.0f, 1.0f, 0.0f};
+    Vec3 right = vec3_cross(up, to_cam);
+    if (vec3_length(right) < 0.001f) right = {1.0f, 0.0f, 0.0f};
+    right = vec3_normalize(right);
+    Vec3 disc_up = vec3_normalize(vec3_cross(to_cam, right));
+
+    Vec3 p0 = vec3_add(center, vec3_add(vec3_scale(right, -half_size), vec3_scale(disc_up, -half_size)));
+    Vec3 p1 = vec3_add(center, vec3_add(vec3_scale(right, half_size), vec3_scale(disc_up, -half_size)));
+    Vec3 p2 = vec3_add(center, vec3_add(vec3_scale(right, half_size), vec3_scale(disc_up, half_size)));
+    Vec3 p3 = vec3_add(center, vec3_add(vec3_scale(right, -half_size), vec3_scale(disc_up, half_size)));
+
+    rlColor4f(r, g, b, a);
+    rlVertex3f(p0.x, p0.y, p0.z);
+    rlVertex3f(p1.x, p1.y, p1.z);
+    rlVertex3f(p2.x, p2.y, p2.z);
+    rlVertex3f(p3.x, p3.y, p3.z);
 }
 
 static void render_star_layer(float cam_x, float cam_z, float day_phase, float night_alpha) {
@@ -202,8 +277,8 @@ static void render_star_layer(float cam_x, float cam_z, float day_phase, float n
     float origin_x = cam_x * g_sky_cfg.stars_parallax;
     float origin_z = cam_z * g_sky_cfg.stars_parallax;
 
-    glPointSize(1.4f);
-    glBegin(GL_POINTS);
+    constexpr float kStarHalfSize = 0.9f; // roughly matches the old glPointSize(1.4f) look
+    rlBegin(RL_QUADS);
     for (int i = 0; i < star_count; ++i) {
         float u = hash01((float)i * 1.11f + 13.0f);
         float v = hash01((float)i * 1.71f + 31.0f);
@@ -220,11 +295,9 @@ static void render_star_layer(float cam_x, float cam_z, float day_phase, float n
         float sr = 0.82f + 0.16f * u;
         float sg = 0.82f + 0.16f * v;
         float sb = 0.90f + 0.10f * w;
-        glColor4f(sr, sg, sb, a);
-        glVertex3f(sx, sy, sz);
+        render_point_billboard(sx, sy, sz, kStarHalfSize, sr, sg, sb, a);
     }
-    glEnd();
-    glPointSize(1.0f);
+    rlEnd();
 }
 
 static void render_nebula_layer(float cam_x, float cam_z, float day_phase, float night_alpha) {
@@ -233,8 +306,7 @@ static void render_nebula_layer(float cam_x, float cam_z, float day_phase, float
     float origin_x = cam_x * g_sky_cfg.nebula_parallax;
     float origin_z = cam_z * g_sky_cfg.nebula_parallax;
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    rlSetBlendMode(RL_BLEND_ADDITIVE);
     for (int i = 0; i < 5; ++i) {
         float u = hash01((float)i * 9.3f + 21.0f);
         float v = hash01((float)i * 17.7f + 55.0f);
@@ -250,7 +322,7 @@ static void render_nebula_layer(float cam_x, float cam_z, float day_phase, float
         float nb = 0.42f + 0.32f * (1.0f - u);
         render_billboard_disc(c, rad, nr, ng, nb, alpha * (0.25f + 0.35f * v), 34);
     }
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    rlSetBlendMode(RL_BLEND_ALPHA);
 }
 
 static void render_cloud_layer(float cam_x, float cam_z, float day_phase, float atmos_factor) {
@@ -259,8 +331,7 @@ static void render_cloud_layer(float cam_x, float cam_z, float day_phase, float 
     float origin_x = cam_x * g_sky_cfg.cloud_parallax;
     float origin_z = cam_z * g_sky_cfg.cloud_parallax;
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    rlSetBlendMode(RL_BLEND_ALPHA);
     for (int i = 0; i < 6; ++i) {
         float t = (float)i * 1.71f;
         float u = hash01(t + 17.0f);
@@ -318,11 +389,10 @@ static void render_shooting_stars(float cam_x, float cam_y, float cam_z, float n
     if (night_alpha < 0.20f) return;
     if (g_shooting_stars.empty()) return;
 
-    glDisable(GL_DEPTH_TEST);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    glLineWidth(2.0f);
-    glBegin(GL_LINES);
+    rlDisableDepthTest();
+    rlSetBlendMode(RL_BLEND_ADDITIVE);
+    rlSetLineWidth(2.0f);
+    rlBegin(RL_LINES);
     for (const auto& s : g_shooting_stars) {
         float progress = 1.0f - (s.life / std::max(0.001f, s.max_life));
         float fade_in = smoothstep01(0.00f, 0.12f, progress);
@@ -332,13 +402,13 @@ static void render_shooting_stars(float cam_x, float cam_y, float cam_z, float n
         Vec3 head = {cam_x + s.offset.x, s.offset.y, cam_z + s.offset.z};
         Vec3 dir = vec3_normalize(s.vel);
         Vec3 tail = vec3_sub(head, vec3_scale(dir, s.length));
-        glColor4f(s.r, s.g, s.b, a);
-        glVertex3f(tail.x, tail.y, tail.z);
-        glVertex3f(head.x, head.y, head.z);
+        rlColor4f(s.r, s.g, s.b, a);
+        rlVertex3f(tail.x, tail.y, tail.z);
+        rlVertex3f(head.x, head.y, head.z);
     }
-    glEnd();
-    glLineWidth(1.0f);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    rlEnd();
+    rlSetLineWidth(1.0f);
+    rlSetBlendMode(RL_BLEND_ALPHA);
 }
 
 // Funcao principal para renderizar todo o ceu alienigena
@@ -346,9 +416,9 @@ void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_phase, fl
     float night_alpha = compute_night_alpha(day_phase);
     SkyPalette palette = compute_sky_palette(day_phase, atmos_factor);
 
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_FOG);
-    glDisable(GL_TEXTURE_2D);
+    rlDisableDepthTest();
+    g_frame_fog.enabled = false; // era glDisable(GL_FOG) - o ceu nao recebe fog de terreno.
+    rlSetTexture(0);
 
     render_sky_gradient_dome(cam_x, cam_z, palette);
     render_star_layer(cam_x, cam_z, day_phase, night_alpha);
@@ -389,10 +459,9 @@ void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_phase, fl
                       0.20f, 0.28f, 0.42f, 0.98f,
                       0.22f, 0.90f, 0.18f,
                       0.010f, 0.22f, 20, 28);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    rlSetBlendMode(RL_BLEND_ADDITIVE);
     render_billboard_disc(planet_pos, g_sky_cfg.planet_radius * 1.45f, 0.46f, 0.60f, 0.90f, night_alpha * 0.16f, 34);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    rlSetBlendMode(RL_BLEND_ALPHA);
 
     float moon_phase = sky_days * std::max(0.0f, g_sky_cfg.moon_orbit_speed) * 0.08f;
     float moon2_phase = sky_days * std::max(0.0f, g_sky_cfg.moon2_orbit_speed) * 0.10f;
@@ -441,16 +510,15 @@ void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_phase, fl
                           1.0f, 0.84f, 0.50f, sun_alpha,
                           0.95f, 0.55f, 0.05f,
                           0.0f, 0.0f, 18, 24);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        rlSetBlendMode(RL_BLEND_ADDITIVE);
         float halo_mul = g_sky_cfg.sun_halo_size;
         render_billboard_disc(sun_pos, g_sky_cfg.sun_radius * halo_mul, 1.0f, 0.70f, 0.35f, (0.12f + 0.20f * g_sky_cfg.bloom_intensity) * sun_alpha, 34);
         render_billboard_disc(sun_pos, g_sky_cfg.sun_radius * (halo_mul * 1.8f), 1.0f, 0.52f, 0.22f, (0.05f + 0.10f * g_sky_cfg.bloom_intensity) * sun_alpha, 34);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        rlSetBlendMode(RL_BLEND_ALPHA);
     }
 
     render_cloud_layer(cam_x, cam_z, day_phase, atmos_factor);
     render_shooting_stars(cam_x, cam_y, cam_z, night_alpha);
 
-    glEnable(GL_DEPTH_TEST);
+    rlEnableDepthTest();
 }

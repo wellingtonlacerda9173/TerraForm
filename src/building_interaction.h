@@ -1,7 +1,5 @@
 #pragma once
 
-#include "platform.h"   // HWND (update_mining_and_placement's signature mirrors update_game's)
-
 // ============= Building Interaction (Build Menu / Mining / Placement) =============
 // Extracted verbatim from main.cpp - the "building_interaction" seam of the refactor plan,
 // covering two areas of render_world()/update_game():
@@ -48,7 +46,8 @@ void render_build_menu(int win_w, int win_h);
 bool update_build_menu_input();
 
 // Mouse targeting (mining/placement raycast), mining action, item pickup, placement action
-// and particle simulation for one frame. Takes dt/hwnd exactly like update_game() does -
-// the original code derives the mouse cursor position and window size locally from hwnd
-// (GetCursorPos/ScreenToClient/GetClientRect), same as before.
-void update_mining_and_placement(float dt, HWND hwnd);
+// and particle simulation for one frame. Dropped the HWND parameter (raylib migration): the
+// original code derived the mouse cursor position and window size from hwnd via
+// GetCursorPos/ScreenToClient/GetClientRect - now GetMousePosition()/GetScreenWidth()/
+// GetScreenHeight() supply the same information with no window handle needed.
+void update_mining_and_placement(float dt);

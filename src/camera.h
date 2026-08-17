@@ -7,8 +7,8 @@
 #include <string>
 
 // ============= Camera 3D (Terceira Pessoa) =============
-// Extracted verbatim from main.cpp (original lines ~204-546 and ~648-825). Camera3D /
-// CameraMode / CameraDebugRay plus the update/collision/visibility functions that operate
+// Extracted verbatim from main.cpp (original lines ~204-546 and ~648-825). GameCamera /
+// GameCameraMode / CameraDebugRay plus the update/collision/visibility functions that operate
 // on the single g_camera instance.
 //
 // Player/physics (g_physics, g_player) are NOT part of this extraction — that is the next
@@ -18,7 +18,7 @@
 // "static" there since they are now called from two translation units — they already had
 // other main.cpp call sites besides the camera code, so this was needed regardless of the
 // camera split).
-struct Camera3D {
+struct GameCamera {
     Vec3 position;      // Posicao calculada da camera
     Vec3 target;        // Alvo (jogador)
     Vec3 up = {0.0f, 1.0f, 0.0f}; // Vetor up
@@ -38,7 +38,7 @@ struct Camera3D {
     float effective_distance = 4.8f;
 };
 
-enum class CameraMode : uint8_t {
+enum class GameCameraMode : uint8_t {
     Open = 0,
     SemiClosed,
     Cave,
@@ -51,17 +51,17 @@ struct CameraDebugRay {
     bool blocked = false;
 };
 
-// O unico Camera3D do jogo. Definido (nao-static) em camera.cpp; main.cpp continua
+// O unico GameCamera do jogo. Definido (nao-static) em camera.cpp; main.cpp continua
 // acessando g_camera diretamente (save/load de config, input de mouse/scroll, HUD de
 // debug, skybox etc.) atraves desta declaracao extern.
-extern Camera3D g_camera;
+extern GameCamera g_camera;
 
 // Estado adaptativo do modo de camera (Open/SemiClosed/Cave/Emergency) e do HUD de debug
 // associado. Definidos em camera.cpp; alguns campos (g_camera_mode, g_camera_mode_reason,
 // g_camera_obstruction, g_camera_enclosed, g_camera_hidden_time, g_camera_debug_rays,
 // g_camera_debug_ray_count) ainda sao lidos por main.cpp fora do modulo de camera (HUD de
 // debug em F3 e desenho dos raios de debug), por isso precisam de linkage externo.
-extern CameraMode g_camera_mode;
+extern GameCameraMode g_camera_mode;
 extern std::string g_camera_mode_reason;
 extern float g_camera_obstruction;
 extern float g_camera_enclosed;
@@ -69,7 +69,7 @@ extern float g_camera_hidden_time;
 extern std::array<CameraDebugRay, 96> g_camera_debug_rays;
 extern int g_camera_debug_ray_count;
 
-const char* camera_mode_name(CameraMode mode);
+const char* camera_mode_name(GameCameraMode mode);
 void reset_camera_near_player(bool reset_angles);
 
 // Aplicar matriz de view (gluLookAt manual) / projecao perspectiva manual.

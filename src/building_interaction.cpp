@@ -1,6 +1,6 @@
 #include "building_interaction.h"
 
-#include "platform.h"
+#include "raylib_platform.h"
 #include "math_core.h"
 #include "noise.h"              // lerp
 #include "blocks.h"
@@ -410,9 +410,9 @@ bool update_build_menu_input() {
     if (!g_show_build_menu) return false;
 
     static bool prev_w = false, prev_s = false, prev_enter = false;
-    bool w_now = key_down('W') || key_down(VK_UP);
-    bool s_now = key_down('S') || key_down(VK_DOWN);
-    bool enter_now = key_down(VK_RETURN);
+    bool w_now = key_down(KEY_W) || key_down(KEY_UP);
+    bool s_now = key_down(KEY_S) || key_down(KEY_DOWN);
+    bool enter_now = key_down(KEY_ENTER);
 
     // Module types list (matches render order)
     const Block module_types[] = {
@@ -510,16 +510,12 @@ bool update_build_menu_input() {
 // the mining/placement raycast (using the named helpers above instead of local lambdas),
 // the mining action (progress/hits/particles/block breaking/drops), item pickup, the
 // placement action (RMB), and the particle simulation step.
-void update_mining_and_placement(float dt, HWND hwnd) {
-    // Mouse targeting
-    POINT cursor;
-    GetCursorPos(&cursor);
-    ScreenToClient(hwnd, &cursor);
+void update_mining_and_placement(float dt) {
+    // Mouse targeting (raylib: mouse position is already client-area-relative, no HWND needed)
+    Vector2 cursor = GetMousePosition();
 
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    int win_w = rc.right - rc.left;
-    int win_h = rc.bottom - rc.top;
+    int win_w = GetScreenWidth();
+    int win_h = GetScreenHeight();
 
     // Atualizar camera antes do targeting, para a mira (+) do centro bater com o raycast.
     update_camera_for_frame();
@@ -676,10 +672,13 @@ void update_mining_and_placement(float dt, HWND hwnd) {
     // Cooldowns (apenas colocacao)
     if (g_place_cd > 0.0f) g_place_cd -= dt;
 
-    bool lmb = key_down(VK_LBUTTON);
-    bool rmb = key_down(VK_RBUTTON);
+    // VK_LBUTTON/VK_RBUTTON are not keyboard keys in raylib - key_down()/IsKeyDown() has no
+    // equivalent for them (it only worked before because GetAsyncKeyState happens to accept
+    // mouse VK codes too). Use IsMouseButtonDown() directly for just these 2 sites.
+    bool lmb = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+    bool rmb = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
 
-    bool e_key = key_down('E');
+    bool e_key = key_down(KEY_E);
     g_prev_e = e_key;
 
     // Mining com progresso (segurar LMB ou E)
@@ -740,7 +739,10 @@ void update_mining_and_placement(float dt, HWND hwnd) {
             // Impacto visivel por hit.
             g_player.mine_anim = std::max(g_player.mine_anim, g_player_visual_cfg.mine_impact_amp);
             g_screen_flash_green = std::max(g_screen_flash_green, 0.07f);
-            Beep(880, 1);
+            // Beep(880, 1) removed (raylib migration): Win32's Beep() has no raylib
+            // equivalent without loading an actual audio asset/device (InitAudioDevice +
+            // LoadSound), which is out of scope here - the visual feedback above (mine_anim
+            // flash + screen flash) still fires on every hit.
 
             // Particulas por golpe.
             for (int i = 0; i < 4; ++i) {

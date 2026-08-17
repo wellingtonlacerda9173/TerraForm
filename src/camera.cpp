@@ -1,6 +1,6 @@
 #include "camera.h"
 
-#include "platform.h"
+#include "raylib_platform.h"
 #include "config_types.h" // CameraConfig, PhysicsConfig (types of the extern globals below)
 #include "noise.h"        // lerp
 #include "world.h"        // World, g_world, world_to_tile, kHeightScale, object_block_at, get_block_height
@@ -22,12 +22,12 @@ extern bool g_debug;
 
 // ============= CAMERA 3D (Terceira Pessoa) =============
 // Extracted verbatim from main.cpp (original lines ~204-546 and ~648-825).
-Camera3D g_camera;
+GameCamera g_camera;
 
 static float g_camera_adapt_pitch = 0.0f;
 static float g_camera_adapt_distance_scale = 1.0f;
 static float g_camera_adapt_target_lift = 0.0f;
-CameraMode g_camera_mode = CameraMode::Open;
+GameCameraMode g_camera_mode = GameCameraMode::Open;
 std::string g_camera_mode_reason = "Open";
 float g_camera_obstruction = 0.0f;
 float g_camera_enclosed = 0.0f;
@@ -36,12 +36,12 @@ static std::unordered_map<int, float> g_camera_occluder_alpha;
 std::array<CameraDebugRay, 96> g_camera_debug_rays = {};
 int g_camera_debug_ray_count = 0;
 
-const char* camera_mode_name(CameraMode mode) {
+const char* camera_mode_name(GameCameraMode mode) {
     switch (mode) {
-        case CameraMode::Open: return "ABERTO";
-        case CameraMode::SemiClosed: return "SEMI";
-        case CameraMode::Cave: return "CAVERNA";
-        case CameraMode::Emergency: return "EMERGENCIA";
+        case GameCameraMode::Open: return "ABERTO";
+        case GameCameraMode::SemiClosed: return "SEMI";
+        case GameCameraMode::Cave: return "CAVERNA";
+        case GameCameraMode::Emergency: return "EMERGENCIA";
         default: return "?";
     }
 }
@@ -56,7 +56,7 @@ void reset_camera_near_player(bool reset_angles) {
     g_camera_adapt_pitch = 0.0f;
     g_camera_adapt_distance_scale = 1.0f;
     g_camera_adapt_target_lift = 0.0f;
-    g_camera_mode = CameraMode::Open;
+    g_camera_mode = GameCameraMode::Open;
     g_camera_mode_reason = "Spawn";
     g_camera_hidden_time = 0.0f;
     g_camera_obstruction = 0.0f;
@@ -98,7 +98,7 @@ void apply_look_at() {
         1.0f
     };
 
-    glMultMatrixf(m);
+    rlMultMatrixf(m);
 }
 
 // Projecao perspectiva manual
@@ -113,7 +113,7 @@ void apply_perspective(float fov_degrees, float aspect, float near_plane, float 
         0.0f,       0.0f, (2.0f * far_plane * near_plane) / (near_plane - far_plane), 0.0f
     };
 
-    glMultMatrixf(m);
+    rlMultMatrixf(m);
 }
 
 // Calcular direcao do ray a partir da posicao do mouse na tela
@@ -437,30 +437,30 @@ void update_camera_for_frame() {
         g_camera_hidden_time = std::max(0.0f, g_camera_hidden_time - frame_dt * 1.8f);
     }
 
-    CameraMode desired_mode = CameraMode::Open;
+    GameCameraMode desired_mode = GameCameraMode::Open;
     if (g_camera_hidden_time >= g_camera_cfg.emergency_hidden_time) {
-        desired_mode = CameraMode::Emergency;
+        desired_mode = GameCameraMode::Emergency;
     } else if (cave_score >= 0.62f || (pit_factor > 0.52f && occlusion_factor > 0.45f)) {
-        desired_mode = CameraMode::Cave;
+        desired_mode = GameCameraMode::Cave;
     } else if (cave_score >= 0.30f) {
-        desired_mode = CameraMode::SemiClosed;
+        desired_mode = GameCameraMode::SemiClosed;
     }
 
     float desired_pitch_abs = g_camera_cfg.open_pitch;
     float desired_scale = g_camera_cfg.open_distance_scale;
     float desired_lift = g_camera_cfg.open_target_lift;
 
-    if (desired_mode == CameraMode::SemiClosed) {
+    if (desired_mode == GameCameraMode::SemiClosed) {
         float t = smoothstep01(0.30f, 0.72f, cave_score);
         desired_pitch_abs = lerp(g_camera_cfg.open_pitch, g_camera_cfg.semi_pitch, t);
         desired_scale = lerp(g_camera_cfg.open_distance_scale, g_camera_cfg.semi_distance_scale, t);
         desired_lift = lerp(g_camera_cfg.open_target_lift, g_camera_cfg.semi_target_lift, t);
-    } else if (desired_mode == CameraMode::Cave) {
+    } else if (desired_mode == GameCameraMode::Cave) {
         float t = smoothstep01(0.44f, 0.95f, std::max(cave_score, occlusion_factor));
         desired_pitch_abs = lerp(g_camera_cfg.semi_pitch, g_camera_cfg.cave_pitch, t);
         desired_scale = lerp(g_camera_cfg.semi_distance_scale, g_camera_cfg.cave_distance_scale, t);
         desired_lift = lerp(g_camera_cfg.semi_target_lift, g_camera_cfg.cave_target_lift, t);
-    } else if (desired_mode == CameraMode::Emergency) {
+    } else if (desired_mode == GameCameraMode::Emergency) {
         desired_pitch_abs = g_camera_cfg.emergency_pitch;
         desired_scale = g_camera_cfg.emergency_distance_scale;
         desired_lift = g_camera_cfg.emergency_target_lift;
@@ -484,7 +484,7 @@ void update_camera_for_frame() {
     float reason_pit = pit_factor;
     float reason_occ = occlusion_factor;
     float reason_enc = enclosed_factor;
-    if (desired_mode == CameraMode::Emergency) g_camera_mode_reason = "Oculto";
+    if (desired_mode == GameCameraMode::Emergency) g_camera_mode_reason = "Oculto";
     else if (reason_pit >= reason_occ && reason_pit >= reason_enc) g_camera_mode_reason = "Buraco";
     else if (reason_enc >= reason_occ) g_camera_mode_reason = "Fechado";
     else g_camera_mode_reason = "Obstrucao";

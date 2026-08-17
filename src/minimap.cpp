@@ -1,4 +1,4 @@
-#include "platform.h"
+#include "raylib_platform.h"
 #include "minimap.h"
 
 #include "math_core.h"           // kPi, compute_daylight, Vec2
@@ -283,24 +283,25 @@ void render_minimap(int win_w, int win_h) {
         float cos_f = std::cos(facing_rad);
         float sin_f = std::sin(facing_rad);
 
-        glBegin(GL_TRIANGLES);
-        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-        // Ponta (frente do jogador)
-        glVertex2f(player_px - sin_f * icon_size * 1.5f, player_py - cos_f * icon_size * 1.5f);
-        // Base esquerda
-        glVertex2f(player_px + sin_f * icon_size - cos_f * icon_size, player_py + cos_f * icon_size + sin_f * icon_size);
-        // Base direita
-        glVertex2f(player_px + sin_f * icon_size + cos_f * icon_size, player_py + cos_f * icon_size - sin_f * icon_size);
-        glEnd();
+        float p0x = player_px - sin_f * icon_size * 1.5f, p0y = player_py - cos_f * icon_size * 1.5f;
+        float p1x = player_px + sin_f * icon_size - cos_f * icon_size, p1y = player_py + cos_f * icon_size + sin_f * icon_size;
+        float p2x = player_px + sin_f * icon_size + cos_f * icon_size, p2y = player_py + cos_f * icon_size - sin_f * icon_size;
 
-        // Contorno
-        glLineWidth(1.5f);
-        glBegin(GL_LINE_LOOP);
-        glColor4f(0.0f, 0.0f, 0.0f, 0.8f);
-        glVertex2f(player_px - sin_f * icon_size * 1.5f, player_py - cos_f * icon_size * 1.5f);
-        glVertex2f(player_px + sin_f * icon_size - cos_f * icon_size, player_py + cos_f * icon_size + sin_f * icon_size);
-        glVertex2f(player_px + sin_f * icon_size + cos_f * icon_size, player_py + cos_f * icon_size - sin_f * icon_size);
-        glEnd();
+        rlBegin(RL_TRIANGLES);
+        rlColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+        rlVertex2f(p0x, p0y);
+        rlVertex2f(p1x, p1y);
+        rlVertex2f(p2x, p2y);
+        rlEnd();
+
+        // Contorno (GL_LINE_LOOP -> segmentos RL_LINES consecutivos + segmento de fechamento)
+        rlSetLineWidth(1.5f);
+        rlBegin(RL_LINES);
+        rlColor4f(0.0f, 0.0f, 0.0f, 0.8f);
+        rlVertex2f(p0x, p0y); rlVertex2f(p1x, p1y);
+        rlVertex2f(p1x, p1y); rlVertex2f(p2x, p2y);
+        rlVertex2f(p2x, p2y); rlVertex2f(p0x, p0y);
+        rlEnd();
     }
 
     // Icone da base (se visivel no viewport)
@@ -316,12 +317,12 @@ void render_minimap(int win_w, int win_h) {
             float house_size = 5.0f;
 
             // Telhado (triangulo)
-            glBegin(GL_TRIANGLES);
-            glColor4f(0.3f, 0.7f, 1.0f, 1.0f);
-            glVertex2f(base_px, base_py - house_size);
-            glVertex2f(base_px - house_size, base_py);
-            glVertex2f(base_px + house_size, base_py);
-            glEnd();
+            rlBegin(RL_TRIANGLES);
+            rlColor4f(0.3f, 0.7f, 1.0f, 1.0f);
+            rlVertex2f(base_px, base_py - house_size);
+            rlVertex2f(base_px - house_size, base_py);
+            rlVertex2f(base_px + house_size, base_py);
+            rlEnd();
 
             // Base (quadrado)
             render_quad(base_px - house_size * 0.7f, base_py, house_size * 1.4f, house_size, 0.3f, 0.6f, 0.9f, 1.0f);
@@ -339,13 +340,13 @@ void render_minimap(int win_w, int win_h) {
 
             // Marcador de waypoint (losango)
             float wp_size = 3.0f;
-            glBegin(GL_QUADS);
-            glColor4f(wp.r, wp.g, wp.b, 1.0f);
-            glVertex2f(wp_px, wp_py - wp_size);
-            glVertex2f(wp_px + wp_size, wp_py);
-            glVertex2f(wp_px, wp_py + wp_size);
-            glVertex2f(wp_px - wp_size, wp_py);
-            glEnd();
+            rlBegin(RL_QUADS);
+            rlColor4f(wp.r, wp.g, wp.b, 1.0f);
+            rlVertex2f(wp_px, wp_py - wp_size);
+            rlVertex2f(wp_px + wp_size, wp_py);
+            rlVertex2f(wp_px, wp_py + wp_size);
+            rlVertex2f(wp_px - wp_size, wp_py);
+            rlEnd();
         }
     }
 
@@ -456,12 +457,12 @@ void render_world_map(int win_w, int win_h) {
             float house_size = 10.0f;
 
             // Telhado
-            glBegin(GL_TRIANGLES);
-            glColor4f(0.3f, 0.7f, 1.0f, 1.0f);
-            glVertex2f(base_mx, base_my - house_size * 1.5f);
-            glVertex2f(base_mx - house_size, base_my);
-            glVertex2f(base_mx + house_size, base_my);
-            glEnd();
+            rlBegin(RL_TRIANGLES);
+            rlColor4f(0.3f, 0.7f, 1.0f, 1.0f);
+            rlVertex2f(base_mx, base_my - house_size * 1.5f);
+            rlVertex2f(base_mx - house_size, base_my);
+            rlVertex2f(base_mx + house_size, base_my);
+            rlEnd();
 
             // Base
             render_quad(base_mx - house_size * 0.8f, base_my, house_size * 1.6f, house_size, 0.3f, 0.6f, 0.9f, 1.0f);
@@ -482,21 +483,25 @@ void render_world_map(int win_w, int win_h) {
             float cos_f = std::cos(facing_rad);
             float sin_f = std::sin(facing_rad);
 
-            glBegin(GL_TRIANGLES);
-            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-            glVertex2f(player_mx - sin_f * icon_size * 1.5f, player_my - cos_f * icon_size * 1.5f);
-            glVertex2f(player_mx + sin_f * icon_size - cos_f * icon_size, player_my + cos_f * icon_size + sin_f * icon_size);
-            glVertex2f(player_mx + sin_f * icon_size + cos_f * icon_size, player_my + cos_f * icon_size - sin_f * icon_size);
-            glEnd();
+            float p0x = player_mx - sin_f * icon_size * 1.5f, p0y = player_my - cos_f * icon_size * 1.5f;
+            float p1x = player_mx + sin_f * icon_size - cos_f * icon_size, p1y = player_my + cos_f * icon_size + sin_f * icon_size;
+            float p2x = player_mx + sin_f * icon_size + cos_f * icon_size, p2y = player_my + cos_f * icon_size - sin_f * icon_size;
 
-            // Contorno
-            glLineWidth(2.0f);
-            glBegin(GL_LINE_LOOP);
-            glColor4f(0.0f, 0.0f, 0.0f, 0.9f);
-            glVertex2f(player_mx - sin_f * icon_size * 1.5f, player_my - cos_f * icon_size * 1.5f);
-            glVertex2f(player_mx + sin_f * icon_size - cos_f * icon_size, player_my + cos_f * icon_size + sin_f * icon_size);
-            glVertex2f(player_mx + sin_f * icon_size + cos_f * icon_size, player_my + cos_f * icon_size - sin_f * icon_size);
-            glEnd();
+            rlBegin(RL_TRIANGLES);
+            rlColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+            rlVertex2f(p0x, p0y);
+            rlVertex2f(p1x, p1y);
+            rlVertex2f(p2x, p2y);
+            rlEnd();
+
+            // Contorno (GL_LINE_LOOP -> RL_LINES + segmento de fechamento)
+            rlSetLineWidth(2.0f);
+            rlBegin(RL_LINES);
+            rlColor4f(0.0f, 0.0f, 0.0f, 0.9f);
+            rlVertex2f(p0x, p0y); rlVertex2f(p1x, p1y);
+            rlVertex2f(p1x, p1y); rlVertex2f(p2x, p2y);
+            rlVertex2f(p2x, p2y); rlVertex2f(p0x, p0y);
+            rlEnd();
         }
     }
 
@@ -511,23 +516,23 @@ void render_world_map(int win_w, int win_h) {
             float wp_size = 6.0f;
 
             // Losango
-            glBegin(GL_QUADS);
-            glColor4f(wp.r, wp.g, wp.b, 1.0f);
-            glVertex2f(wp_mx, wp_my - wp_size);
-            glVertex2f(wp_mx + wp_size, wp_my);
-            glVertex2f(wp_mx, wp_my + wp_size);
-            glVertex2f(wp_mx - wp_size, wp_my);
-            glEnd();
+            rlBegin(RL_QUADS);
+            rlColor4f(wp.r, wp.g, wp.b, 1.0f);
+            rlVertex2f(wp_mx, wp_my - wp_size);
+            rlVertex2f(wp_mx + wp_size, wp_my);
+            rlVertex2f(wp_mx, wp_my + wp_size);
+            rlVertex2f(wp_mx - wp_size, wp_my);
+            rlEnd();
 
-            // Contorno
-            glLineWidth(1.5f);
-            glBegin(GL_LINE_LOOP);
-            glColor4f(0.0f, 0.0f, 0.0f, 0.8f);
-            glVertex2f(wp_mx, wp_my - wp_size);
-            glVertex2f(wp_mx + wp_size, wp_my);
-            glVertex2f(wp_mx, wp_my + wp_size);
-            glVertex2f(wp_mx - wp_size, wp_my);
-            glEnd();
+            // Contorno (GL_LINE_LOOP -> RL_LINES + segmento de fechamento)
+            rlSetLineWidth(1.5f);
+            rlBegin(RL_LINES);
+            rlColor4f(0.0f, 0.0f, 0.0f, 0.8f);
+            rlVertex2f(wp_mx, wp_my - wp_size); rlVertex2f(wp_mx + wp_size, wp_my);
+            rlVertex2f(wp_mx + wp_size, wp_my); rlVertex2f(wp_mx, wp_my + wp_size);
+            rlVertex2f(wp_mx, wp_my + wp_size); rlVertex2f(wp_mx - wp_size, wp_my);
+            rlVertex2f(wp_mx - wp_size, wp_my); rlVertex2f(wp_mx, wp_my - wp_size);
+            rlEnd();
 
             // Label se houver
             if (!wp.label.empty()) {
