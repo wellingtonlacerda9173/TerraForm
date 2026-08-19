@@ -245,8 +245,8 @@ static void build_physics_test_map(World& world);
 // handling, the ui_menu extraction stage) sets it from another translation unit now - the
 // WinMain message loop and WindowProc below (still in this file) keep reading/writing it too.
 bool g_quit = false;
-static const int WORLD_WIDTH = 512;
-static const int WORLD_HEIGHT = 256;
+static const int WORLD_WIDTH = 768;
+static const int WORLD_HEIGHT = 384;
 static constexpr float TILE_PX = 16.0f;
 
 // Sistema de zoom para melhor visibilidade
@@ -765,6 +765,17 @@ static void render_cube_3d_tex(float x, float y, float z, float size, Tile top, 
 
     if (outline) {
         render_cube_outline_3d(x, y, z, size, 1.0f);
+        // render_cube_outline_3d() draws via DrawCubeWiresV -> rlBegin(RL_LINES). rlgl's
+        // rlBegin() (rlgl.h) unconditionally resets the NEW draw call's textureId to
+        // RLGL.State.defaultTextureId (a hardcoded opaque-white 1x1 texture) whenever the
+        // primitive mode changes - it has no memory of whatever texture the app bound via
+        // rlSetTexture(). render_world() only calls rlSetTexture(g_tex_atlas) once, before the
+        // whole terrain loop starts, so without re-asserting it here, the very next RL_QUADS
+        // draw (any later tile's plane/wall/cube in this same frame) silently samples the blank
+        // white default texture instead of the atlas for the rest of the frame - this was the
+        // root cause of "flat white/gray terrain, zero color variation between block types"
+        // (this function is only reached when use_textures is true, so g_tex_atlas is valid).
+        rlSetTexture(g_tex_atlas);
     }
 }
 

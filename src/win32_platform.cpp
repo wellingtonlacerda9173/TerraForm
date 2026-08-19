@@ -32,8 +32,8 @@ extern MapConfig g_map_cfg;
 // WORLD_WIDTH/WORLD_HEIGHT: compile-time literals (not mutable state) defined in main.cpp;
 // kept here as this file's own copy rather than shared via extern - same pattern as elsewhere
 // in this codebase.
-static const int WORLD_WIDTH = 512;
-static const int WORLD_HEIGHT = 256;
+static const int WORLD_WIDTH = 768;
+static const int WORLD_HEIGHT = 384;
 
 // render_world()/update_game() stay DEFINED in main.cpp per the refactor plan - they are the
 // two intentional final orchestrators left there. They lost their HWND/HDC parameters in this

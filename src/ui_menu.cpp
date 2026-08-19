@@ -53,8 +53,8 @@ extern bool g_quit;
 // main.cpp; kept here as this file's own copy rather than shared via extern - same pattern as
 // the kDayLength duplication already used in modules_building.cpp/minimap.cpp/sky.cpp/
 // lighting.cpp/ui_hud.cpp (kBase*Max there).
-static const int WORLD_WIDTH = 512;
-static const int WORLD_HEIGHT = 256;
+static const int WORLD_WIDTH = 768;
+static const int WORLD_HEIGHT = 384;
 static constexpr float kDayLength = 150.0f; // seconds
 
 // kColorPanelBorder: same "own copy of a compile-time-ish literal" reasoning as above - this
