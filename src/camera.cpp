@@ -197,10 +197,12 @@ static bool camera_sample_hits_world(float sx, float sy, float sz, int* out_tx =
     if (sy <= terrain_y + 0.06f) return true;
 
     Block obj = object_block_at(*g_world, tx, tz);
-    if (obj != Block::Air) {
-        float top = terrain_y + get_block_height(obj);
-        if (sy >= terrain_y - 0.03f && sy <= top + 0.02f) return true;
-    }
+    float top = terrain_y;
+    bool has_top = false;
+    if (obj != Block::Air) { top += get_block_height(obj); has_top = true; }
+    int stack_h = g_world->stack_height_at(tx, tz);
+    if (stack_h > 0) { top += (float)stack_h * 1.0f; has_top = true; }
+    if (has_top && sy >= terrain_y - 0.03f && sy <= top + 0.02f) return true;
     return false;
 }
 

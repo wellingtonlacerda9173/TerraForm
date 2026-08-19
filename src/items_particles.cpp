@@ -197,7 +197,7 @@ void update_item_drops(float dt) {
             int tx = world_to_tile(d.x);
             int tz = world_to_tile(d.z);
             if (g_world->in_bounds(tx, tz)) {
-                rest_y = surface_height_at(*g_world, tx, tz) + kRestOffset;
+                rest_y = stack_top_height_at(*g_world, tx, tz) + kRestOffset;
             }
         }
 

@@ -14,6 +14,16 @@
 // definition, declared here and defined in world.cpp — see the comment there for details;
 // its body is unchanged from the original.
 struct World {
+    // Empilhamento de blocos construidos (torres/paredes) - aditivo sobre o modelo de
+    // heightmap+objeto-unico existente, ver plano salvo em
+    // C:\Users\9173\.claude\plans\quero-refatorar-todo-o-serene-kazoo.md. Cada coluna pode
+    // ter ate kMaxStackExtra blocos extras empilhados em cima do que ja existia
+    // (terreno/objeto unico), sem vaos - a pilha sempre comeca exatamente no topo do que
+    // ja estava la. Buffer plano w*h*kMaxStackExtra (nao vector-de-vector) por localidade
+    // de cache e pra evitar overhead de alocacao por coluna (a maioria das colunas fica
+    // vazia).
+    static constexpr int kMaxStackExtra = 24;
+
     int w = 0;
     int h = 0;
     unsigned seed = 1337;
@@ -22,6 +32,8 @@ struct World {
     std::vector<Block> ground;
     std::vector<int16_t> heightmap; // altura do terreno por tile (0 = nivel base)
     std::vector<int> surface_y;
+    std::vector<uint8_t> stack_height; // w*h, quantidade de camadas extras por coluna (0 = sem pilha)
+    std::vector<Block> stack_blocks;   // w*h*kMaxStackExtra, camada L da coluna idx em stack_blocks[idx*kMaxStackExtra+L]
 
     World(int W, int H, unsigned s)
         : w(W)
@@ -30,7 +42,9 @@ struct World {
         , tiles((size_t)W * (size_t)H, Block::Air)
         , ground((size_t)W * (size_t)H, Block::Dirt)
         , heightmap((size_t)W * (size_t)H, 0)
-        , surface_y((size_t)W, H / 2) {
+        , surface_y((size_t)W, H / 2)
+        , stack_height((size_t)W * (size_t)H, 0)
+        , stack_blocks((size_t)W * (size_t)H * (size_t)kMaxStackExtra, Block::Air) {
         gen();
     }
 
@@ -66,6 +80,39 @@ struct World {
         heightmap[(size_t)y * (size_t)w + (size_t)x] = v;
     }
 
+    // ---- Pilha de blocos construidos (empilhamento) ----
+    int stack_height_at(int x, int y) const {
+        if (!in_bounds(x, y)) return 0;
+        return (int)stack_height[(size_t)y * (size_t)w + (size_t)x];
+    }
+
+    Block stack_block_at(int x, int y, int layer) const {
+        int sh = stack_height_at(x, y);
+        if (layer < 0 || layer >= sh) return Block::Air;
+        size_t col = (size_t)y * (size_t)w + (size_t)x;
+        return stack_blocks[col * (size_t)kMaxStackExtra + (size_t)layer];
+    }
+
+    bool stack_push(int x, int y, Block b) {
+        if (!in_bounds(x, y)) return false;
+        size_t col = (size_t)y * (size_t)w + (size_t)x;
+        int sh = (int)stack_height[col];
+        if (sh >= kMaxStackExtra) return false;
+        stack_blocks[col * (size_t)kMaxStackExtra + (size_t)sh] = b;
+        stack_height[col] = (uint8_t)(sh + 1);
+        return true;
+    }
+
+    bool stack_pop(int x, int y) {
+        if (!in_bounds(x, y)) return false;
+        size_t col = (size_t)y * (size_t)w + (size_t)x;
+        int sh = (int)stack_height[col];
+        if (sh <= 0) return false;
+        stack_blocks[col * (size_t)kMaxStackExtra + (size_t)(sh - 1)] = Block::Air;
+        stack_height[col] = (uint8_t)(sh - 1);
+        return true;
+    }
+
     void rebuild_surface_cache() {
         surface_y.assign((size_t)w, h - 1);
         for (int x = 0; x < w; ++x) {
@@ -96,6 +143,13 @@ float get_block_height(Block b);
 Block surface_block_at(const World& world, int tx, int tz);
 Block object_block_at(const World& world, int tx, int tz);
 float surface_height_at(const World& world, int tx, int tz);
+
+// Altura/bloco efetivo da coluna INCLUINDO blocos empilhados pelo jogador (ver
+// World::kMaxStackExtra acima) - usado no lugar de surface_height_at/object_block_at
+// sempre que "o que ha nessa coluna, contando construcoes" importa (fisica do jogador,
+// colisao de camera, mira/colocacao, pouso de item derrubado).
+float stack_top_height_at(const World& world, int tx, int tz);
+Block stack_top_block_at(const World& world, int tx, int tz);
 
 bool is_mineable(Block b);
 int block_hits_required(Block b);

@@ -1365,6 +1365,63 @@ void render_world(int win_w, int win_h) {
                         else render_cube_3d(world_x, center_y, world_z, 1.0f, tint_r, tint_g, tint_b, a, use_outline);
                     }
                 }
+
+                // === PILHA DE BLOCOS CONSTRUIDOS (empilhamento - torres/paredes) ===
+                // Aditivo sobre o "obj" unico acima: desenha um cubo cheio por camada, com
+                // Y incremental a partir do topo do que ja existia (terreno, ou o obj unico
+                // se houver). render_cube_3d_tex/render_cube_3d ja desenham as 6 faces por
+                // chamada, entao uma torre de N blocos ganha suas 4 faces laterais de graca -
+                // nao precisa de logica de parede separada. Culling de face oculta (nao
+                // desenhar o fundo/topo de um cubo colado a outro) fica deliberadamente fora
+                // de escopo por ora - pilhas sao curtas na pratica.
+                int stack_h = g_world->stack_height_at(tx, tz);
+                if (stack_h > 0 && dist2 <= obj_radius2) {
+                    float stack_base_y = base_y + get_block_height(obj);
+                    for (int layer = 0; layer < stack_h; ++layer) {
+                        Block sb = g_world->stack_block_at(tx, tz, layer);
+                        if (sb == Block::Air) continue;
+
+                        BlockTex stex = block_tex(sb);
+                        if (stex.is_water) {
+                            stex.top = (Tile)((int)Tile::Water0 + water_frame);
+                            stex.side = stex.top;
+                            stex.bottom = stex.top;
+                        }
+
+                        float stint_r = 1.0f, stint_g = 1.0f, stint_b = 1.0f, sa = 1.0f;
+                        if (stex.uses_tint || stex.transparent) {
+                            float cr, cg, cb, ca;
+                            block_color(sb, tz, g_world->h, cr, cg, cb, ca);
+                            if (stex.uses_tint) { stint_r = cr; stint_g = cg; stint_b = cb; }
+                            if (stex.transparent) sa = ca;
+                        }
+                        sa *= camera_occluder_alpha_for_tile(tx, tz);
+
+                        if (g_lighting.enabled) {
+                            float light_r, light_g, light_b;
+                            sample_lightmap((float)tx, (float)tz, light_r, light_g, light_b);
+                            bool is_emissive = is_module(sb) || sb == Block::Crystal;
+                            if (is_emissive) {
+                                light_r = std::max(light_r, 0.7f);
+                                light_g = std::max(light_g, 0.7f);
+                                light_b = std::max(light_b, 0.7f);
+                            }
+                            float depth_factor = compute_depth_factor(stack_base_y + (float)layer, rpy);
+                            light_r *= depth_factor;
+                            light_g *= depth_factor;
+                            light_b *= depth_factor;
+                            stint_r *= light_r;
+                            stint_g *= light_g;
+                            stint_b *= light_b;
+                            apply_color_grading(stint_r, stint_g, stint_b);
+                        }
+
+                        bool suse_outline = is_module(sb) || (sb == Block::Crystal || sb == Block::Coal || sb == Block::Iron || sb == Block::Copper);
+                        float scenter_y = stack_base_y + (float)layer * 1.0f + 0.5f;
+                        if (use_textures) render_cube_3d_tex(world_x, scenter_y, world_z, 1.0f, stex.top, stex.side, stex.bottom, stint_r, stint_g, stint_b, sa, suse_outline);
+                        else render_cube_3d(world_x, scenter_y, world_z, 1.0f, stint_r, stint_g, stint_b, sa, suse_outline);
+                    }
+                }
             }
         }
     }

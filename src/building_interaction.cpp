@@ -159,7 +159,14 @@ static bool ray_hits_tile(const World& world, Vec3 ray_o, Vec3 ray_d, float ray_
     Vec3 bmin = {tile_min(tx), base_y - 0.05f, tile_min(tz)};
     Vec3 bmax = {tile_max(tx), base_y + 1.05f, tile_max(tz)};
 
-    if (b == Block::Water) {
+    int stack_h = world.stack_height_at(tx, tz);
+    if (stack_h > 0) {
+        // Coluna tem blocos empilhados pelo jogador (torre/parede): eles sempre ficam por
+        // cima de tudo, entao essa unica AABB combinada (terreno ate o topo da pilha) tem
+        // prioridade sobre os branches de agua/folha/chao-like abaixo - mirar/minerar
+        // sempre acerta o bloco mais alto da pilha, nunca o que esta embaixo dela.
+        bmax.y = base_y + 1.05f + (float)stack_h * 1.0f;
+    } else if (b == Block::Water) {
         bmin.y = base_y - 0.30f;
         bmax.y = base_y + 0.08f;
     } else if (b == Block::Leaves) {
@@ -177,6 +184,13 @@ static bool ray_hits_tile(const World& world, Vec3 ray_o, Vec3 ray_d, float ray_
 // to placeable_tile() above (pre-existing duplication in the original code, not something
 // this mechanical stage fixes), so it stays a separate named function with the same name it
 // had as a lambda.
+// Empilhamento: quando o alvo mirado ja e solido mas a coluna ainda tem espaco na pilha
+// (World::kMaxStackExtra), a colocacao empilha em cima em vez de procurar uma coluna vazia
+// adjacente. So usado dentro deste arquivo (mira e acao de colocar estao na mesma unidade
+// de traducao), por isso fica static local em vez de seguir o padrao extern/main.cpp usado
+// pelos outros globais de mira/colocacao acima.
+static bool g_place_is_stack = false;
+
 static bool placeable_tile_for_place(Block b) {
     if (is_base_structure(b)) return false;
     if (is_module(b)) return false;
@@ -528,6 +542,7 @@ void update_mining_and_placement(float dt) {
     g_target_in_range = false;
     g_has_place_target = false;
     g_place_in_range = false;
+    g_place_is_stack = false;
     g_target_drop = -1;
 
     // Ray da camera (mira) - agora baseado na posicao do mouse
@@ -602,11 +617,19 @@ void update_mining_and_placement(float dt) {
         float dist = std::sqrt(dx * dx + dz * dz);
         g_target_in_range = (dist <= kReach);
 
-        // Alvo de colocacao: tile atual se substituivel, ou o ultimo substituivel antes do hit.
+        // Alvo de colocacao: tile atual se substituivel, ou empilhar em cima dele se ja
+        // solido mas com espaco na pilha, ou o ultimo substituivel antes do hit.
+        bool top_stackable = !placeable_tile(top_b) && g_world->stack_height_at(tx, tz) < World::kMaxStackExtra;
         if (placeable_tile(top_b)) {
             g_place_x = tx;
             g_place_y = tz;
             g_has_place_target = true;
+            g_place_in_range = g_target_in_range;
+        } else if (top_stackable) {
+            g_place_x = tx;
+            g_place_y = tz;
+            g_has_place_target = true;
+            g_place_is_stack = true;
             g_place_in_range = g_target_in_range;
         } else if (last_place_x != -1) {
             g_place_x = last_place_x;
@@ -684,9 +707,17 @@ void update_mining_and_placement(float dt) {
     // Mining com progresso (segurar LMB ou E)
     bool mine_input = (lmb || e_key);
     bool has_mine_target = g_has_target && g_target_in_range && g_world->in_bounds(g_target_x, g_target_y);
-    Block mine_block = has_mine_target ? g_world->get(g_target_x, g_target_y) : Block::Air;
-    if (has_mine_target && mine_block == Block::Air) {
-        mine_block = surface_block_at(*g_world, g_target_x, g_target_y);
+    int target_stack_h = has_mine_target ? g_world->stack_height_at(g_target_x, g_target_y) : 0;
+    Block mine_block;
+    if (target_stack_h > 0) {
+        // Coluna tem blocos empilhados: sempre minera o topo da pilha primeiro, nunca o
+        // que esta embaixo dela.
+        mine_block = g_world->stack_block_at(g_target_x, g_target_y, target_stack_h - 1);
+    } else {
+        mine_block = has_mine_target ? g_world->get(g_target_x, g_target_y) : Block::Air;
+        if (has_mine_target && mine_block == Block::Air) {
+            mine_block = surface_block_at(*g_world, g_target_x, g_target_y);
+        }
     }
 
     // Feedback ao tentar minerar estrutura da base
@@ -790,36 +821,49 @@ void update_mining_and_placement(float dt) {
             Block b = mine_block;
             spawn_block_particles(b, tile_center(g_target_x), tile_center(g_target_y), g_world->h);
 
-            // Para blocos de terreno, remover 1 bloco "inteiro" em altura de mundo.
-            // Como o heightmap usa kHeightScale, convertemos 1.0 mundo -> unidades do heightmap.
-            if (is_ground_like(b)) {
-                constexpr float kWorldBlockHeight = 1.0f;
-                int dig_units = std::max(1, (int)std::lround(kWorldBlockHeight / std::max(0.01f, kHeightScale)));
-                int16_t h = g_world->height_at(g_target_x, g_target_y);
-                int nh = std::max(0, (int)h - dig_units);
-                g_world->set_height(g_target_x, g_target_y, (int16_t)nh);
-
-                // Mantem material de solo (ground-like) para permitir mineracao sequencial.
-                Block prev_ground = g_world->get_ground(g_target_x, g_target_y);
-                Block next_ground = Block::Dirt;
-                if (prev_ground == Block::Sand) next_ground = Block::Sand;
-                else if (prev_ground == Block::Snow || prev_ground == Block::Ice) next_ground = Block::Ice;
-                g_world->set_ground(g_target_x, g_target_y, next_ground);
-                g_world->set(g_target_x, g_target_y, next_ground);
-            } else {
-                g_world->set(g_target_x, g_target_y, Block::Air);
-            }
-
-            g_surface_dirty = true;
-
-            if (is_module(b)) {
-                refund_cost(module_cost(b));
-                g_modules.erase(std::remove_if(g_modules.begin(), g_modules.end(),
-                    [](const Module& m) { return m.x == g_target_x && m.y == g_target_y; }), g_modules.end());
-            } else {
+            if (target_stack_h > 0) {
+                // Bloco empilhado (torre/parede construida pelo jogador): remove so o topo
+                // da pilha - o que estava embaixo (terreno/objeto original) fica intocado e
+                // e revelado automaticamente assim que stack_height volta a 0. Modulos nunca
+                // empilham (ver colocacao acima), entao nao ha necessidade de checar
+                // is_module aqui.
+                float spawn_y = stack_top_height_at(*g_world, g_target_x, g_target_y);
+                g_world->stack_pop(g_target_x, g_target_y);
+                g_surface_dirty = true;
                 Block drop = drop_item_for_block(b);
-                float sy = (float)g_world->height_at(g_target_x, g_target_y) * kHeightScale + drop_spawn_y_for_block(b);
-                spawn_item_drop(drop, tile_center(g_target_x), tile_center(g_target_y), sy);
+                spawn_item_drop(drop, tile_center(g_target_x), tile_center(g_target_y), spawn_y + drop_spawn_y_for_block(b));
+            } else {
+                // Para blocos de terreno, remover 1 bloco "inteiro" em altura de mundo.
+                // Como o heightmap usa kHeightScale, convertemos 1.0 mundo -> unidades do heightmap.
+                if (is_ground_like(b)) {
+                    constexpr float kWorldBlockHeight = 1.0f;
+                    int dig_units = std::max(1, (int)std::lround(kWorldBlockHeight / std::max(0.01f, kHeightScale)));
+                    int16_t h = g_world->height_at(g_target_x, g_target_y);
+                    int nh = std::max(0, (int)h - dig_units);
+                    g_world->set_height(g_target_x, g_target_y, (int16_t)nh);
+
+                    // Mantem material de solo (ground-like) para permitir mineracao sequencial.
+                    Block prev_ground = g_world->get_ground(g_target_x, g_target_y);
+                    Block next_ground = Block::Dirt;
+                    if (prev_ground == Block::Sand) next_ground = Block::Sand;
+                    else if (prev_ground == Block::Snow || prev_ground == Block::Ice) next_ground = Block::Ice;
+                    g_world->set_ground(g_target_x, g_target_y, next_ground);
+                    g_world->set(g_target_x, g_target_y, next_ground);
+                } else {
+                    g_world->set(g_target_x, g_target_y, Block::Air);
+                }
+
+                g_surface_dirty = true;
+
+                if (is_module(b)) {
+                    refund_cost(module_cost(b));
+                    g_modules.erase(std::remove_if(g_modules.begin(), g_modules.end(),
+                        [](const Module& m) { return m.x == g_target_x && m.y == g_target_y; }), g_modules.end());
+                } else {
+                    Block drop = drop_item_for_block(b);
+                    float sy = (float)g_world->height_at(g_target_x, g_target_y) * kHeightScale + drop_spawn_y_for_block(b);
+                    spawn_item_drop(drop, tile_center(g_target_x), tile_center(g_target_y), sy);
+                }
             }
 
             // Reset apos quebrar
@@ -889,6 +933,24 @@ void update_mining_and_placement(float dt) {
                     g_surface_dirty = true;
                     g_place_cd = 0.12f;
                 }
+            }
+        } else if (g_place_is_stack && !is_module(g_selected) && g_inventory[(int)g_selected] > 0) {
+            // Empilhamento: alvo ja e solido (recusado por placeable_tile_for_place acima),
+            // mas a coluna ainda tem espaco na pilha - empilha em cima em vez de recusar.
+            // Modulos ficam de fora de proposito (nao empilham nesta v1).
+            float pl = g_player.pos.x - g_player.w * 0.5f;
+            float pr = g_player.pos.x + g_player.w * 0.5f;
+            float pt = g_player.pos.y - g_player.h * 0.5f;
+            float pb = g_player.pos.y + g_player.h * 0.5f;
+            float tl = tile_min(g_place_x);
+            float tr = tile_max(g_place_x);
+            float tf = tile_min(g_place_y);
+            float tb = tile_max(g_place_y);
+            bool overlaps_player = !(tr <= pl || tl >= pr || tb <= pt || tf >= pb);
+            if (!overlaps_player && g_world->stack_push(g_place_x, g_place_y, g_selected)) {
+                g_inventory[(int)g_selected]--;
+                g_surface_dirty = true;
+                g_place_cd = 0.12f;
             }
         }
     }

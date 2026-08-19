@@ -68,7 +68,7 @@ bool save_game(const char* path) {
     if (!f) return false;
 
     const char magic[4] = {'T', 'F', '3', 'D'};  // Atualizado para 3D
-    uint32_t version = 7;  // Version 7 - adds player objectives progress
+    uint32_t version = 8;  // Version 8 - adds stacked/built blocks per column
     uint32_t w = (uint32_t)g_world->w;
     uint32_t h = (uint32_t)g_world->h;
     uint32_t seed = (uint32_t)g_world->seed;
@@ -177,6 +177,22 @@ bool save_game(const char* path) {
     for (uint32_t i = 0; i < ever_built_count; ++i) {
         uint8_t v = ever_built[i] ? 1 : 0;
         f.write((const char*)&v, sizeof(v));
+    }
+
+    // Version 8: pilhas de blocos construidos (empilhamento) - formato esparso, so
+    // colunas com stack_height > 0 (a maioria fica vazia).
+    std::vector<uint32_t> stacked_columns;
+    uint32_t total_columns = (uint32_t)(g_world->w * g_world->h);
+    for (uint32_t i = 0; i < total_columns; ++i) {
+        if (g_world->stack_height[i] > 0) stacked_columns.push_back(i);
+    }
+    uint32_t stack_entry_count = (uint32_t)stacked_columns.size();
+    f.write((const char*)&stack_entry_count, sizeof(stack_entry_count));
+    for (uint32_t col : stacked_columns) {
+        uint8_t sh = g_world->stack_height[col];
+        f.write((const char*)&col, sizeof(col));
+        f.write((const char*)&sh, sizeof(sh));
+        f.write((const char*)&g_world->stack_blocks[(size_t)col * (size_t)World::kMaxStackExtra], (std::streamsize)sh);
     }
 
     return (bool)f;
@@ -490,6 +506,28 @@ bool load_game(const char* path) {
     }
     if (objectives_all_complete()) {
         g_victory = true;
+    }
+
+    // Version 8: pilhas de blocos construidos (empilhamento). Saves antigos (sem essa
+    // secao) ja tem stack_height/stack_blocks zerados pelo construtor de World - nao
+    // precisa de reset explicito, so pular esta leitura.
+    if (version >= 8) {
+        uint32_t stack_entry_count = 0;
+        f.read((char*)&stack_entry_count, sizeof(stack_entry_count));
+        if (f && stack_entry_count <= tile_count) {
+            for (uint32_t i = 0; i < stack_entry_count; ++i) {
+                uint32_t col = 0;
+                uint8_t sh = 0;
+                f.read((char*)&col, sizeof(col));
+                f.read((char*)&sh, sizeof(sh));
+                if (f && col < tile_count && sh <= World::kMaxStackExtra) {
+                    g_world->stack_height[col] = sh;
+                    f.read((char*)&g_world->stack_blocks[(size_t)col * (size_t)World::kMaxStackExtra], (std::streamsize)sh);
+                } else {
+                    break; // malformado - para aqui, deixa o resto das colunas vazio
+                }
+            }
+        }
     }
 
     return true;

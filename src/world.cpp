@@ -355,6 +355,16 @@ float surface_height_at(const World& world, int tx, int tz) {
     return h;
 }
 
+float stack_top_height_at(const World& world, int tx, int tz) {
+    return surface_height_at(world, tx, tz) + (float)world.stack_height_at(tx, tz) * 1.0f;
+}
+
+Block stack_top_block_at(const World& world, int tx, int tz) {
+    int sh = world.stack_height_at(tx, tz);
+    if (sh > 0) return world.stack_block_at(tx, tz, sh - 1);
+    return object_block_at(world, tx, tz);
+}
+
 bool is_mineable(Block b) {
     if (b == Block::Air || b == Block::Water) return false;
     if (is_base_structure(b)) return false;

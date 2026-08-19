@@ -100,7 +100,7 @@ static void place_player_near(World& world, int x) {
                 if (!is_solid(world.get(tx, ty))) {
                     g_player.pos = {(float)tx, (float)ty};
                     g_player.vel = {0.0f, 0.0f};
-                    g_player.pos_y = surface_height_at(world, tx, ty);
+                    g_player.pos_y = stack_top_height_at(world, tx, ty);
                     g_player.ground_height = g_player.pos_y;
                     g_player.on_ground = true;
                     reset_player_physics_runtime(true);
@@ -112,7 +112,7 @@ static void place_player_near(World& world, int x) {
     // Fallback
     g_player.pos = {(float)x, (float)y};
     g_player.vel = {0.0f, 0.0f};
-    g_player.pos_y = surface_height_at(world, x, y);
+    g_player.pos_y = stack_top_height_at(world, x, y);
     g_player.ground_height = g_player.pos_y;
     g_player.on_ground = true;
     reset_player_physics_runtime(true);
@@ -139,7 +139,7 @@ void spawn_player_at_base() {
     g_player.vel_y = 0.0f;
     g_player.pos_y = 0.0f;
     if (g_world && g_world->in_bounds(g_base_x, g_base_y)) {
-        g_player.pos_y = surface_height_at(*g_world, g_base_x, g_base_y);
+        g_player.pos_y = stack_top_height_at(*g_world, g_base_x, g_base_y);
     }
     g_player.on_ground = true;
     g_player.can_jump = true;
@@ -407,10 +407,10 @@ static float sample_support_height(const World& world, float cx, float cz, float
         int tx = world_to_tile(cx + off.x);
         int tz = world_to_tile(cz + off.y);
         if (!world.in_bounds(tx, tz)) continue;
-        float h = surface_height_at(world, tx, tz);
+        float h = stack_top_height_at(world, tx, tz);
         if (h > best_h) {
             best_h = h;
-            best_surface = surface_block_at(world, tx, tz);
+            best_surface = stack_top_block_at(world, tx, tz);
         }
     }
 
@@ -429,6 +429,7 @@ static bool column_blocks_movement(const World& world, int tx, int tz, float foo
     Block obj = object_block_at(world, tx, tz);
     float top_h = terrain_h;
     if (obj != Block::Air) top_h += get_block_height(obj);
+    top_h += (float)world.stack_height_at(tx, tz) * 1.0f;
     out_top = top_h;
 
     if (obj != Block::Air && !is_ground_like(obj)) {
@@ -729,7 +730,7 @@ static GroundProbeResult probe_ground(const Player& p, const World& world, const
         int tx = world_to_tile(sx);
         int tz = world_to_tile(sz);
         bool in_bounds = world.in_bounds(tx, tz);
-        float sample_h = in_bounds ? surface_height_at(world, tx, tz) : -10000.0f;
+        float sample_h = in_bounds ? stack_top_height_at(world, tx, tz) : -10000.0f;
         bool hit = in_bounds && sample_h <= ray_top + cfg.ground_tolerance && sample_h >= ray_bottom;
 
         if (capture_debug_rays && g_physics.debug_ray_count < (int)g_physics.debug_rays.size()) {
@@ -743,7 +744,7 @@ static GroundProbeResult probe_ground(const Player& p, const World& world, const
         hit_count++;
         if (sample_h > highest) {
             highest = sample_h;
-            highest_block = surface_block_at(world, tx, tz);
+            highest_block = stack_top_block_at(world, tx, tz);
         }
         normal_accum = vec3_add(normal_accum, compute_surface_normal(world, sx, sz));
     }
