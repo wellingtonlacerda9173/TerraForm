@@ -1474,30 +1474,7 @@ void render_world(int win_w, int win_h) {
     // === RENDERIZAR PLAYER 3D (Estilo Minicraft - Blocky) ===
     {
         float px = rpos.x;
-        // OFFSET PARA ELEVAR O JOGADOR ACIMA DO SOLO (evita pes afundados)
-        float player_y_offset = 0.15f;
-        float py = rpy + player_y_offset;  // Altura real + offset
         float pz = rpos.y;  // Y do 2D = Z no 3D
-        
-        // Indicador de perigo (player pisca vermelho quando HP ou O2 baixo)
-        bool in_danger = (g_player.hp < 30 || g_player_oxygen < 20.0f);
-        float danger_pulse = in_danger ? (0.5f + 0.5f * std::sin(g_player.anim_frame * 8.0f)) : 0.0f;
-        
-        // Sombra no chao (maior e mais visivel)
-        rlDisableDepthTest();
-        render_plane_3d(px, g_player.ground_height + 0.02f, pz, 0.9f, 0.0f, 0.0f, 0.0f, 0.55f);
-
-        // Circulo de indicador de perigo
-        if (in_danger) {
-            render_plane_3d(px, g_player.ground_height + 0.03f, pz, 1.2f,
-                kColorDanger[0], kColorDanger[1], kColorDanger[2], danger_pulse * 0.3f);
-        }
-        rlEnableDepthTest();
-        
-        // Usar rotacao continua para orientar o personagem
-        float rot_rad = get_player_render_rotation() * (kPi / 180.0f);
-        float sin_rot = std::sin(rot_rad);
-        float cos_rot = std::cos(rot_rad);
 
         int surf_tx = world_to_tile(px);
         int surf_tz = world_to_tile(pz);
@@ -1505,6 +1482,33 @@ void render_world(int win_w, int win_h) {
         if (g_world && g_world->in_bounds(surf_tx, surf_tz)) {
             surf = surface_block_at(*g_world, surf_tx, surf_tz);
         }
+
+        // OFFSET PARA ELEVAR O JOGADOR ACIMA DO SOLO (evita pes afundados); nadando, o
+        // personagem afunda parcialmente na agua em vez de flutuar por cima dela (o piso de
+        // colisao continua sendo o fundo do lago - so este offset visual muda).
+        bool swimming = (surf == Block::Water);
+        float player_y_offset = swimming ? -0.42f : 0.15f;
+        float py = rpy + player_y_offset;  // Altura real + offset
+
+        // Indicador de perigo (player pisca vermelho quando HP ou O2 baixo)
+        bool in_danger = (g_player.hp < 30 || g_player_oxygen < 20.0f);
+        float danger_pulse = in_danger ? (0.5f + 0.5f * std::sin(g_player.anim_frame * 8.0f)) : 0.0f;
+
+        // Sombra no chao (maior e mais visivel)
+        rlDisableDepthTest();
+        if (!swimming) render_plane_3d(px, g_player.ground_height + 0.02f, pz, 0.9f, 0.0f, 0.0f, 0.0f, 0.55f);
+
+        // Circulo de indicador de perigo
+        if (in_danger) {
+            render_plane_3d(px, g_player.ground_height + 0.03f, pz, 1.2f,
+                kColorDanger[0], kColorDanger[1], kColorDanger[2], danger_pulse * 0.3f);
+        }
+        rlEnableDepthTest();
+
+        // Usar rotacao continua para orientar o personagem
+        float rot_rad = get_player_render_rotation() * (kPi / 180.0f);
+        float sin_rot = std::sin(rot_rad);
+        float cos_rot = std::cos(rot_rad);
 
         float temp_cold = smoothstep01(-35.0f, -65.0f, g_temperature);
         float frost = temp_cold * g_player_visual_cfg.suit_frost_strength;

@@ -123,6 +123,9 @@ static void write_default_physics_config(const std::string& path) {
 "  \"terrain_mud_speed\": 0.58,\n"
 "  \"terrain_mud_accel\": 0.65,\n"
 "  \"terrain_mud_friction\": 1.95,\n"
+"  \"terrain_water_speed\": 0.42,\n"
+"  \"terrain_water_accel\": 0.45,\n"
+"  \"terrain_water_friction\": 1.70,\n"
 "  \"jetpack_thrust\": 12.0,\n"
 "  \"jetpack_fuel_consume\": 15.0,\n"
 "  \"jetpack_fuel_regen\": 25.0,\n"
@@ -181,6 +184,9 @@ static void apply_physics_config_overrides(const std::string& text, PhysicsConfi
     setf("terrain_mud_speed", cfg.terrain_mud_speed);
     setf("terrain_mud_accel", cfg.terrain_mud_accel);
     setf("terrain_mud_friction", cfg.terrain_mud_friction);
+    setf("terrain_water_speed", cfg.terrain_water_speed);
+    setf("terrain_water_accel", cfg.terrain_water_accel);
+    setf("terrain_water_friction", cfg.terrain_water_friction);
 
     setf("jetpack_thrust", cfg.jetpack_thrust);
     setf("jetpack_fuel_consume", cfg.jetpack_fuel_consume);

@@ -104,7 +104,11 @@ static constexpr float kBaseIntegrityMax = 100.0f;
 static bool placeable_tile(Block b) {
     if (is_base_structure(b)) return false;
     if (is_module(b)) return false;
-    if (b == Block::Air || b == Block::Water) return true;
+    // Agua aberta agora e nadavel (ver TerrainPhysicsType::Water) - sem fundacao solida ali,
+    // nao da pra colocar nem empilhar bloco flutuando na coluna. Colocar diretamente em uma
+    // pilha ja existente sobre agua continua liberado (checado a parte, ver top_stackable).
+    if (b == Block::Water) return false;
+    if (b == Block::Air) return true;
     return !is_solid(b); // walkable pode ser substituido
 }
 
@@ -194,7 +198,8 @@ static bool g_place_is_stack = false;
 static bool placeable_tile_for_place(Block b) {
     if (is_base_structure(b)) return false;
     if (is_module(b)) return false;
-    if (b == Block::Air || b == Block::Water) return true;
+    if (b == Block::Water) return false; // agua aberta e nadavel, sem fundacao pra colocar
+    if (b == Block::Air) return true;
     return !is_solid(b); // chao/walkable pode ser substituido
 }
 
@@ -619,7 +624,8 @@ void update_mining_and_placement(float dt) {
 
         // Alvo de colocacao: tile atual se substituivel, ou empilhar em cima dele se ja
         // solido mas com espaco na pilha, ou o ultimo substituivel antes do hit.
-        bool top_stackable = !placeable_tile(top_b) && g_world->stack_height_at(tx, tz) < World::kMaxStackExtra;
+        bool top_stackable = !placeable_tile(top_b) && top_b != Block::Water
+            && g_world->stack_height_at(tx, tz) < World::kMaxStackExtra;
         if (placeable_tile(top_b)) {
             g_place_x = tx;
             g_place_y = tz;

@@ -226,6 +226,9 @@ struct PhysicsConfig {
     float terrain_mud_speed = 0.58f;
     float terrain_mud_accel = 0.65f;
     float terrain_mud_friction = 1.95f;
+    float terrain_water_speed = 0.42f;
+    float terrain_water_accel = 0.45f;
+    float terrain_water_friction = 1.70f;
 
     float jetpack_thrust = 12.0f;
     float jetpack_fuel_consume = 15.0f;

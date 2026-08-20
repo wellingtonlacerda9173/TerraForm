@@ -62,7 +62,7 @@ struct OnboardingState {
 // ---- Accessibility settings (g_settings instance stays owned by main.cpp) ----
 struct GameSettings {
     float ui_scale = 1.0f;           // 0.75 - 1.5
-    float camera_sensitivity = 0.20f;
+    float camera_sensitivity = 0.30f; // Deve casar com GameCamera::sensitivity (camera.h) - senao abrir o menu de Config e mexer no slider reseta a sensibilidade de volta pro valor antigo
     bool invert_y = false;
     float brightness = 1.0f;
     float contrast = 1.0f;

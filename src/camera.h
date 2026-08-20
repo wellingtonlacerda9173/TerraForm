@@ -25,13 +25,16 @@ struct GameCamera {
 
     // Camera em terceira pessoa com horizonte visivel (menos "top-down")
     float distance = 4.8f;      // Distancia do jogador
-    float yaw = 180.0f;         // Rotacao horizontal (graus)
+    float yaw = 180.0f;         // Rotacao horizontal (graus) - sem limite, gira 360 livre
     float pitch = 18.0f;        // Rotacao vertical (mais baixa para ver o horizonte)
-    float min_pitch = 8.0f;
-    float max_pitch = 88.0f;
+    // Faixa alargada quase ate os polos (perto de 0 = ver o horizonte/ceu de perto, perto de
+    // 90 = ver quase de cima, proximo dos pes) - antes 8/88 deixava a sensacao de nao
+    // conseguir olhar pro ceu nem pros pes mesmo a faixa sendo tecnicamente livre no yaw.
+    float min_pitch = 2.0f;
+    float max_pitch = 89.0f;
     float min_distance = 2.2f;
     float max_distance = 90.0f;
-    float sensitivity = 0.18f;  // Sensibilidade mais suave
+    float sensitivity = 0.30f;  // Antes 0.18 - baixo demais fazia um giro de 360 exigir muito espaco fisico de mouse
     float smooth_speed = 6.0f;  // Suavizacao do seguimento
 
     // Distancia efetiva (apos colisao)

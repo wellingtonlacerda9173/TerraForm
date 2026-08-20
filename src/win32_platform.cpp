@@ -71,21 +71,22 @@ static void process_input_events() {
         }
     }
 
-    // Middle mouse button: capture the cursor to rotate the camera, exactly like the old
-    // SetCapture/ShowCursor(FALSE) pair - DisableCursor()/EnableCursor() also hides the OS
-    // cursor and (on desktop platforms) keeps it centered, which is what let the original code
-    // compute a mouse delta by re-centering every frame; GetMouseDelta() gives that delta
-    // directly now, no manual recentring math needed.
-    if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE)) {
-        g_mouse_captured = true;
-        DisableCursor();
-    }
-    if (IsMouseButtonReleased(MOUSE_BUTTON_MIDDLE)) {
-        g_mouse_captured = false;
-        EnableCursor();
+    // Mouse-look e sempre ativo durante o jogo (estilo FPS/TPS padrao, consistente com a
+    // mira central ja usada por building_interaction.cpp, que raycasta a partir do centro
+    // da camera e nunca depende da posicao do cursor). Antes disso exigia segurar o botao
+    // do meio pra girar a camera, o que o usuario reportou como "muito limitado" - o cursor
+    // agora fica travado/oculto (DisableCursor) o tempo todo em GameState::Playing e volta a
+    // aparecer normalmente em qualquer outro estado (Menu/Paused/Settings/Dead), que ainda
+    // precisam do cursor livre pra clicar em botoes. So alterna Disable/EnableCursor na
+    // borda da transicao de estado (nao a cada frame) pra evitar side effects redundantes.
+    bool want_capture = (g_state == GameState::Playing);
+    if (want_capture != g_mouse_captured) {
+        g_mouse_captured = want_capture;
+        if (g_mouse_captured) DisableCursor();
+        else EnableCursor();
     }
 
-    if (g_mouse_captured && g_state == GameState::Playing) {
+    if (g_mouse_captured) {
         Vector2 delta = GetMouseDelta();
         // Rotacionar camera (mouse direita = camera gira direita) - mesma matematica de
         // sensitivity de antes.

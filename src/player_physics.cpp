@@ -288,6 +288,8 @@ static TerrainPhysicsType terrain_type_from_block(Block b) {
     switch (b) {
         case Block::Ice:
             return TerrainPhysicsType::Ice;
+        case Block::Water:
+            return TerrainPhysicsType::Water;
         case Block::Sand:
             return TerrainPhysicsType::Sand;
         case Block::Stone:
@@ -339,6 +341,14 @@ static TerrainPhysicsProfile terrain_profile_for(TerrainPhysicsType t, const Phy
             p.friction_mult = cfg.terrain_mud_friction;
             p.slide_mult = 0.80f;
             p.label = "Lama";
+            break;
+        case TerrainPhysicsType::Water:
+            p.speed_mult = cfg.terrain_water_speed;
+            p.accel_mult = cfg.terrain_water_accel;
+            p.decel_mult = cfg.terrain_water_accel;
+            p.friction_mult = cfg.terrain_water_friction;
+            p.slide_mult = 0.70f;
+            p.label = "Agua";
             break;
         default:
             p.speed_mult = 1.0f;

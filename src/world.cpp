@@ -362,7 +362,10 @@ float stack_top_height_at(const World& world, int tx, int tz) {
 Block stack_top_block_at(const World& world, int tx, int tz) {
     int sh = world.stack_height_at(tx, tz);
     if (sh > 0) return world.stack_block_at(tx, tz, sh - 1);
-    return object_block_at(world, tx, tz);
+    // Sem pilha: mesma regra original de surface_block_at (ignora objetos soltos como
+    // rochas/minerios e retorna o tipo de solo/bioma) - preserva o comportamento de
+    // terrain_type_from_block (gelo/areia/lama) que ja existia antes do empilhamento.
+    return surface_block_at(world, tx, tz);
 }
 
 bool is_mineable(Block b) {

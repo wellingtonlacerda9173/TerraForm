@@ -71,6 +71,7 @@ enum class TerrainPhysicsType : uint8_t {
     Sand,
     Stone,
     Mud,
+    Water,
 };
 
 struct PhysicsRayDebug {
