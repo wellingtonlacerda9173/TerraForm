@@ -17,6 +17,7 @@
   "pitch_lerp": 0.14,
   "distance_lerp": 0.14,
   "lift_lerp": 0.15,
+  "step_height_lerp": 0.22,
   "cave_depth_start": 0.45,
   "cave_depth_end": 2.60,
   "enclosed_start": 0.28,

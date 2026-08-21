@@ -45,6 +45,11 @@ void block_color(Block b, int y, int world_h, float& r, float& g, float& bl, flo
             a = 0.80f;
             break;
         }
+        case Block::Lava: {
+            r = 0.95f; g = 0.35f; bl = 0.04f;  // Laranja/vermelho incandescente
+            a = 0.92f;
+            break;
+        }
         case Block::Ice: {
             // Ice color - mais azulado e brilhante
             r = 0.65f; g = 0.88f; bl = 1.0f;
@@ -67,7 +72,12 @@ void block_color(Block b, int y, int world_h, float& r, float& g, float& bl, flo
         case Block::Copper: r = 0.90f; g = 0.50f; bl = 0.20f; break;  // Laranja vivo
         case Block::Crystal: r = 0.70f; g = 0.25f; bl = 1.0f; break;  // Roxo brilhante
         case Block::Metal: r = 0.75f; g = 0.78f; bl = 0.82f; break;  // Metal mais claro
-        case Block::Organic: r = 0.30f; g = 0.75f; bl = 0.18f; break;  // Verde mais vivo
+        // Antes era verde puro (0.30,0.75,0.18) - lia como grama de Terra num planeta que
+        // ainda nao foi terraformado (o usuario reportou isso). Reaproveitado como liquen/
+        // musgo alienigena bioluminescente (ciano-teal) pros bolsoes de flora do Passo 6 de
+        // world.cpp nao parecerem grama precoce - Block::Grass continua reservado so pra
+        // depois que terraform_step() converter Terra->Grama de verdade (oxigenio/agua).
+        case Block::Organic: r = 0.12f; g = 0.58f; bl = 0.62f; break;  // Ciano-teal alienigena
         case Block::Components: r = 0.15f; g = 0.60f; bl = 0.15f; break;  // Circuit green vivo
 
         // Modules - CORES MAIS VIBRANTES
@@ -94,6 +104,8 @@ void block_color(Block b, int y, int world_h, float& r, float& g, float& bl, flo
         case Block::PipeH:           r = 0.50f; g = 0.55f; bl = 0.60f; break;  // Metal
         case Block::PipeV:           r = 0.50f; g = 0.55f; bl = 0.60f; break;  // Metal
         case Block::Antenna:         r = 0.75f; g = 0.77f; bl = 0.80f; break;  // Metal claro
+        case Block::RefinedAlloy:    r = 0.85f; g = 0.65f; bl = 0.15f; break;  // Liga dourada - distingue do Metal cru
+        case Block::LaserPistol:     r = 0.20f; g = 0.85f; bl = 0.95f; break;  // Ciano laser - distingue de tudo mais
         default: r = 1.0f; g = 0.0f; bl = 1.0f; break;
     }
 
@@ -189,6 +201,27 @@ static void tile_noise(std::vector<uint8_t>& atlas, Tile t, Color8 base, int amp
     }
 }
 
+// Ruido em 2 camadas (blotches grandes + granulado fino) - da uma textura mais organica/
+// "com grumos" (terra/pedra/areia de verdade tem manchas maiores, nao so' um chiado fino
+// uniforme) sem precisar desenhar formas a mao. Usado nos 3 tiles de chao mais vistos
+// (Dirt/Stone/Sand) - pedido do jogador: "melhore... textura dos elementos".
+static void tile_noise_2layer(std::vector<uint8_t>& atlas, Tile t, Color8 base, int fine_amp, int coarse_amp, uint32_t seed) {
+    for (int y = 0; y < kAtlasTileSize; ++y) {
+        for (int x = 0; x < kAtlasTileSize; ++x) {
+            uint32_t nf = noise2_u32(x, y, seed);
+            int df = (int)(nf & 255u) % (fine_amp * 2 + 1) - fine_amp;
+            uint32_t nc = noise2_u32(x / 3, y / 3, seed + 999u);
+            int dc = (int)(nc & 255u) % (coarse_amp * 2 + 1) - coarse_amp;
+            int d = df + dc;
+            tile_set_px(atlas, t, x, y, c8(
+                clamp_u8((int)base.r + d),
+                clamp_u8((int)base.g + d),
+                clamp_u8((int)base.b + d),
+                base.a));
+        }
+    }
+}
+
 static void tile_add_specks(std::vector<uint8_t>& atlas, Tile t, Color8 speck, int count, uint32_t seed) {
     for (int i = 0; i < count; ++i) {
         uint32_t h = noise2_u32(i, i * 7, seed);
@@ -231,10 +264,12 @@ static void tile_generate_all(std::vector<uint8_t>& atlas) {
         }
     }
 
-    // Terra, pedra, areia
-    tile_noise(atlas, Tile::Dirt, c8(132, 88, 48), 28, 0x20u);
-    tile_noise(atlas, Tile::Stone, c8(110, 114, 120), 22, 0x21u);
-    tile_noise(atlas, Tile::Sand, c8(222, 194, 104), 18, 0x22u);
+    // Terra, pedra, areia - ruido em 2 camadas (blotches + granulado fino, ver
+    // tile_noise_2layer) em vez de um chiado uniforme so' - le como grumos/veios de
+    // verdade, nao um "TV sem sinal".
+    tile_noise_2layer(atlas, Tile::Dirt, c8(132, 88, 48), 16, 20, 0x20u);
+    tile_noise_2layer(atlas, Tile::Stone, c8(110, 114, 120), 14, 16, 0x21u);
+    tile_noise_2layer(atlas, Tile::Sand, c8(222, 194, 104), 12, 10, 0x22u);
 
     // Agua (4 frames)
     for (int f = 0; f < 4; ++f) {
@@ -394,6 +429,9 @@ BlockTex block_tex(Block b) {
         case Block::Stone: t = {Tile::Stone, Tile::Stone, Tile::Stone, false, false, false}; break;
         case Block::Sand:  t = {Tile::Sand, Tile::Sand, Tile::Sand, false, false, false}; break;
         case Block::Water: t = {Tile::Water0, Tile::Water0, Tile::Water0, true, true, true}; break;
+        // Reaproveita literalmente o mesmo tile animado da agua (Water0..3) - so o tint em
+        // block_color() abaixo muda de azul pra laranja/vermelho, sem tile novo no atlas.
+        case Block::Lava:  t = {Tile::Water0, Tile::Water0, Tile::Water0, true, true, true}; break;
         case Block::Ice:   t = {Tile::Ice, Tile::Ice, Tile::Ice, false, true, false}; break;
         case Block::Snow:  t = {Tile::Snow, Tile::Snow, Tile::Snow, false, false, false}; break;
         case Block::Wood:  t = {Tile::WoodTop, Tile::WoodSide, Tile::WoodTop, false, false, false}; break;
@@ -431,6 +469,12 @@ BlockTex block_tex(Block b) {
         case Block::PipeH:
         case Block::PipeV: t = {Tile::Pipe, Tile::Pipe, Tile::Pipe, false, false, false}; break;
         case Block::Antenna: t = {Tile::Antenna, Tile::Antenna, Tile::Antenna, false, false, false}; break;
+        // Reaproveita a arte de Metal (uses_tint=true aplica o dourado de block_color() por
+        // cima) - nunca colocado como tile do mundo, so existe pra icone/HUD/popup de coleta.
+        case Block::RefinedAlloy: t = {Tile::Metal, Tile::Metal, Tile::Metal, true, false, false}; break;
+        // Reaproveita a arte da Antena (uses_tint=true aplica o ciano de block_color() por
+        // cima) - nunca colocado como tile do mundo, so existe pra icone do hotbar.
+        case Block::LaserPistol: t = {Tile::Antenna, Tile::Antenna, Tile::Antenna, true, false, false}; break;
 
         default: t = {Tile::Missing, Tile::Missing, Tile::Missing, false, false, false}; break;
     }

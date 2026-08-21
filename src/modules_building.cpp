@@ -8,6 +8,7 @@
 #include "noise.h"              // lerp
 #include "player_physics.h"     // g_player
 #include "objectives.h"         // notify_module_built, update_objectives
+#include "items_particles.h"    // spawn_block_particles (efeito visual do upgrade)
 
 #include <algorithm>
 #include <cmath>
@@ -29,6 +30,7 @@ extern float g_base_integrity;
 extern float g_player_oxygen;
 extern float g_player_water;
 extern float g_player_food;
+extern float g_suit_integrity; // Ver comentario completo em main.cpp
 extern float g_energy;      // Deprecated, use g_base_energy
 extern float g_water_res;   // Deprecated, maps to g_player_water
 extern float g_oxygen;      // Deprecated, maps to g_player_oxygen
@@ -73,7 +75,7 @@ static constexpr float kBaseOxygenMax = 200.0f;
 static constexpr float kBaseFoodMax = 200.0f;
 static constexpr float kBaseIntegrityMax = 100.0f;
 static constexpr float kBaseIntegrityDecayRate = 0.5f;  // Per minute without workshop
-static constexpr float kDayLength = 150.0f; // seconds
+// kDayLength agora vem de game_state.h (era uma copia local aqui).
 static constexpr float kTempThawing = 0.0f;     // Water can be liquid
 
 // ============= Construction / build slots / modules (state) =============
@@ -163,30 +165,34 @@ void generate_base(World& world) {
         }
     }
 
-    // === PLATAFORMA DA BASE (3D) ===
-    // A base anterior era desenhada como "sprite" no grid (bom para top-down),
-    // mas em camera 3D isso parecia um desenho no chao. Aqui criamos uma plataforma real.
-    static constexpr int kPadHalfW = 22;
-    static constexpr int kPadHalfH = 12;
+    // === PLATAFORMA CIRCULAR DA BASE (3D) ===
+    // A base agora e centrada no domo geodesico decorativo (malha sem colisao, desenhada em
+    // main.cpp - ver render_geodesic_dome). So a plataforma solida por baixo precisa de
+    // blocos; o domo em si nao bloqueia passagem, entao nao precisa de vao fisico de porta
+    // aqui - o jogador ja anda livremente por baixo dele em qualquer direcao.
+    static constexpr float kPadRadius = 20.0f;
 
-    // Levantar 1 unidade de heightmap (=> 0.25 no mundo) para dar volume nas bordas via paredes.
+    // Levantar 1 unidade de heightmap (=> 0.25 no mundo) para dar volume na borda.
     int16_t pad_h = (int16_t)std::clamp((int)base_h + 1, 0, 256);
 
-    for (int dy = -kPadHalfH; dy <= kPadHalfH; ++dy) {
-        for (int dx = -kPadHalfW; dx <= kPadHalfW; ++dx) {
-            int tx = best_x + dx;
-            int ty = surface + dy;
-            if (!world.in_bounds(tx, ty)) continue;
+    {
+        float pad_r2 = kPadRadius * kPadRadius;
+        int pad_span = (int)kPadRadius + 1;
+        for (int dy = -pad_span; dy <= pad_span; ++dy) {
+            for (int dx = -pad_span; dx <= pad_span; ++dx) {
+                if ((float)(dx * dx + dy * dy) > pad_r2) continue;
+                int tx = best_x + dx;
+                int ty = surface + dy;
+                if (!world.in_bounds(tx, ty)) continue;
 
-            world.set_height(tx, ty, pad_h);
-
-            // Limpar objetos existentes (rochas/minerios) para nao poluir a base
-            if (object_block_at(world, tx, ty) != Block::Air) {
-                world.set(tx, ty, Block::Air);
+                world.set_height(tx, ty, pad_h);
+                // Limpar objetos existentes (rochas/minerios) para nao poluir a base
+                if (object_block_at(world, tx, ty) != Block::Air) {
+                    world.set(tx, ty, Block::Air);
+                }
+                world.set_ground(tx, ty, Block::LandingPad);
+                world.set(tx, ty, Block::LandingPad);
             }
-
-            world.set_ground(tx, ty, Block::LandingPad);
-            world.set(tx, ty, Block::LandingPad);
         }
     }
 
@@ -197,39 +203,43 @@ void generate_base(World& world) {
         g_build_slots.push_back({sx, sy, Block::Air, label});
     };
 
-    // === SLOTS DE CONSTRUCAO (organizados em grid) ===
+    // === SLOTS DE CONSTRUCAO (em anel ao redor do domo, nao mais numa grade espalhada) ===
     int cx = best_x;
     int cy = surface;
-    int front_y = cy - 6;
-    int back_y = cy + 5;
-    int mid_y = cy + 1;
 
-    // Solar (3 slots)
-    for (int i = 0; i < 3; ++i) {
-        int sx = cx - 12 + i * 2;
-        place_slot(sx, front_y, "Solar " + std::to_string(i + 1));
+    // NOTA: a parede da cupula NAO e mais feita de blocos do mundo (2 tentativas anteriores -
+    // sem altura e depois com altura - ficaram com contorno serrilhado/pontudo, uma grade
+    // quadrada tentando aproximar um circulo, e o usuario rejeitou o visual de novo mesmo
+    // com a malha lisa por cima). A colisao de verdade agora e uma barreira cilindrica
+    // invisivel calculada matematicamente (kDomeWallRadius, modules_building.h; aplicada em
+    // player_physics.cpp/apply_dome_barrier) - um circulo perfeito, sem serrilhado nenhum. A
+    // porta "sempre fechada" e so um detalhe de cor/moldura na propria malha decorativa
+    // (render_geodesic_dome em main.cpp, secao da saia/fundacao) - nao existe bloco de porta
+    // nenhum no mundo.
+
+    static const char* kSlotLabels[10] = {
+        "Solar 1", "Solar 2", "Solar 3", "Water Extractor", "O2 Generator",
+        "Greenhouse 1", "Greenhouse 2", "CO2 Factory", "Terraformer", "Habitat"
+    };
+    const float kSlotRingRadius = 14.0f;
+    // SEM deslocamento de fase de proposito: com 10 slots a 36 graus um do outro, um
+    // deslocamento de meia posicao (pi/10 = 18 graus) na verdade ALINHA um slot exatamente
+    // no eixo norte/sul (18+36*2=90, 18+36*7=270) - o oposto do que o comentario original
+    // aqui dizia querer. Sem deslocamento nenhum, 36*i nunca bate em 90/270 pra i inteiro
+    // (90/36 nao e inteiro), entao nenhum slot cai na linha da porta.
+    for (int i = 0; i < 10; ++i) {
+        float angle = (float)i / 10.0f * 2.0f * kPi;
+        int sx = cx + (int)std::lround(std::cos(angle) * kSlotRingRadius);
+        int sy = cy + (int)std::lround(std::sin(angle) * kSlotRingRadius);
+        place_slot(sx, sy, kSlotLabels[i]);
     }
 
-    // Agua / Oxigenio
-    place_slot(cx + 6, front_y, "Water Extractor");
-    place_slot(cx + 8, front_y, "O2 Generator");
-
-    // Estufas (2 slots)
-    place_slot(cx - 14, back_y, "Greenhouse 1");
-    place_slot(cx - 12, back_y, "Greenhouse 2");
-
-    // Terraformacao (CO2 + Terraformer)
-    place_slot(cx + 12, back_y, "CO2 Factory");
-    place_slot(cx + 14, back_y, "Terraformer");
-
-    // Habitat (centro)
-    place_slot(cx - 1, mid_y, "Habitat");
-
-    // === DECORACAO 3D (simples) ===
-    // Pequeno "wreck" de foguete (nao deitado como sprite)
+    // === DECORACAO 3D (simples) - fora do anel de slots ===
+    // "Wreck" de foguete, reposicionado (radio ~25) pra nao colidir com o anel de slots
+    // (raio 14) nem com a parede/porta (lado sul, dy>0).
     {
-        int rx = cx + 14;
-        int ry = cy - 1;
+        int rx = cx + 18;
+        int ry = cy - 18;
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dx = -1; dx <= 1; ++dx) {
                 if (world.in_bounds(rx + dx, ry + dy)) world.set(rx + dx, ry + dy, Block::RocketHull);
@@ -239,25 +249,12 @@ void generate_base(World& world) {
         if (world.in_bounds(rx, ry - 2)) world.set(rx, ry - 2, Block::RocketNose);
     }
 
-    // Pequeno "hub" em domo (anel)
-    {
-        int dx0 = cx - 12;
-        int dy0 = cy - 1;
-        for (int dy = -2; dy <= 2; ++dy) {
-            for (int dx = -2; dx <= 2; ++dx) {
-                int tx = dx0 + dx;
-                int ty = dy0 + dy;
-                if (!world.in_bounds(tx, ty)) continue;
-
-                if (std::abs(dx) == 2 || std::abs(dy) == 2) {
-                    world.set(tx, ty, Block::DomeFrame);
-                } else if (dx == 0 && dy == 0) {
-                    world.set(tx, ty, Block::DomeGlass);
-                }
-            }
-        }
-        if (world.in_bounds(dx0, dy0 - 3)) world.set(dx0, dy0 - 3, Block::Antenna);
-    }
+    // NOTA: o "abrigo interior" estilo GTA (quartinho mobiliado bem distante, acessado por
+    // teleporte) foi removido a pedido do usuario - com a cupula agora tendo colisao de
+    // verdade, todo passeio pra fora da base (minerar/explorar) teria que passar pela porta,
+    // o que forcaria um teleporte indesejado pro quartinho distante toda vez. A porta agora
+    // so cruza a propria parede da cupula (ver bloco acima) - um pulo curto, nao uma viagem
+    // longa - entao sair da base pra explorar funciona normalmente.
 
     // O slot de construcao inicial fica vazio de proposito (nao ha mais um painel solar
     // pre-construido aqui): o primeiro objetivo do jogador ("Gerar energia") e justamente
@@ -411,6 +408,94 @@ bool start_construction(Block module_type, int slot_index) {
     return true;
 }
 
+// Upgrade de 1 nivel (tecla R, main.cpp) - ver comentario completo em modules_building.h.
+bool try_upgrade_module(int tx, int ty) {
+    for (Module& m : g_modules) {
+        if (m.x != tx || m.y != ty) continue;
+        if (m.upgraded) return false;
+
+        CraftCost cost = get_module_upgrade_cost(m.type);
+        if (!can_afford(cost)) {
+            add_alert("Recursos insuficientes pro upgrade!", 1.0f, 0.3f, 0.3f);
+            return false;
+        }
+
+        spend_cost(cost);
+        m.upgraded = true;
+        ModuleStats stats = get_module_stats(m.type);
+        add_alert("Modulo aprimorado: " + std::string(stats.name), 0.3f, 1.0f, 0.5f);
+        if (g_world) {
+            spawn_block_particles(Block::Crystal, tile_center(tx), tile_center(ty), g_world->h);
+        }
+        return true;
+    }
+    return false;
+}
+
+// Refino de Liga (tecla G, main.cpp) - ver comentario completo em modules_building.h.
+// Cooldown fixo em vez de fila tipo start_construction(): uma fila exigiria
+// struct/save/UI de progresso novos so pra um recurso cujo unico consumidor hoje e o
+// objetivo de legado "Refinar um legado" (objectives.cpp) - cooldown simples basta.
+static constexpr int kRefineBatchSize = 5;
+static constexpr float kRefineCooldownSeconds = 4.0f;
+static float g_refine_cooldown = 0.0f;
+
+bool try_refine_at_workshop(int tx, int ty) {
+    if (g_refine_cooldown > 0.0f) {
+        set_toast("Oficina recarregando...", 1.0f);
+        return false;
+    }
+    for (Module& m : g_modules) {
+        if (m.x != tx || m.y != ty || m.type != Block::Workshop) continue;
+        if (m.status == ModuleStatus::Damaged) {
+            add_alert("Oficina danificada - repare antes de refinar!", 1.0f, 0.4f, 0.2f);
+            return false;
+        }
+
+        CraftCost cost = get_refine_cost();
+        if (!can_afford(cost)) {
+            add_alert("Recursos insuficientes para refinar!", 1.0f, 0.3f, 0.3f);
+            return false;
+        }
+
+        spend_cost(cost);
+        g_inventory[(int)Block::RefinedAlloy] += kRefineBatchSize;
+        g_refine_cooldown = kRefineCooldownSeconds;
+        add_alert("Liga Refinada produzida! (+" + std::to_string(kRefineBatchSize) + ")", 0.3f, 1.0f, 0.5f);
+        if (g_world) {
+            spawn_block_particles(Block::Metal, tile_center(tx), tile_center(ty), g_world->h);
+        }
+        return true;
+    }
+    return false;
+}
+
+// Fabricacao "de campo" da Pistola de Laser (tecla P, main.cpp, funciona em qualquer lugar -
+// pedido do jogador: a versao original exigia mirar uma Oficina construida, mas isso
+// virava um tech avancado de meio-jogo pra uma ameaca que devia ser leve/opcional desde
+// cedo). E uma posse (0 ou 1), nao um lote que soma - fabricar de novo com uma ja em maos
+// e bloqueado antes de gastar recurso a toa.
+bool try_craft_laser_pistol() {
+    if (g_inventory[(int)Block::LaserPistol] > 0) {
+        set_toast("Voce ja possui uma Pistola de Laser.", 1.5f);
+        return false;
+    }
+
+    CraftCost cost = get_weapon_cost();
+    if (!can_afford(cost)) {
+        add_alert("Recursos insuficientes para fabricar a pistola! (" + module_cost_string(cost) + ")", 1.0f, 0.3f, 0.3f);
+        return false;
+    }
+
+    spend_cost(cost);
+    g_inventory[(int)Block::LaserPistol] = 1;
+    add_alert("Pistola de Laser fabricada!", 0.3f, 1.0f, 0.5f);
+    if (g_world) {
+        spawn_block_particles(Block::Metal, g_player.pos.x, g_player.pos.y, g_world->h);
+    }
+    return true;
+}
+
 // Legacy unlock requirements (for backward compatibility)
 struct UnlockRequirement {
     int stone = 0;
@@ -418,19 +503,28 @@ struct UnlockRequirement {
     int coal = 0;
     int copper = 0;
     int wood = 0;
+    int ice = 0;
+    int crystal = 0;
+    int metal = 0;
+    int organic = 0;
+    int components = 0;
 };
 
+// Rebalanceamento: os thresholds antigos eram 4-10x mais baratos que o custo de
+// construcao real (get_module_cost(), inventory_crafting.cpp) e nunca checavam gelo/
+// cristal/metal/organico/componentes mesmo quando o modulo realmente precisa deles -
+// unlock virava so decorativo (sempre desbloqueado bem antes de dar pra construir).
+// Novos thresholds ~60% do custo real, usando os recursos que o modulo de fato pede.
 static UnlockRequirement get_unlock_requirement(Block b) {
     UnlockRequirement r{};
-    // Progressive unlock requirements - collect resources to unlock modules
     switch (b) {
-        case Block::SolarPanel:       r.iron = 0; break;  // Already unlocked
-        case Block::WaterExtractor:   r.stone = 5; break; // Colete pedra
-        case Block::OxygenGenerator:  r.iron = 5; break;  // Colete ferro
-        case Block::Greenhouse:       r.stone = 10; r.iron = 5; break;  // Recursos variados
-        case Block::CO2Factory:       r.iron = 10; r.coal = 5; break;   // Precisa carvao
-        case Block::Habitat:          r.iron = 15; r.stone = 15; break; // Mais avancado
-        case Block::TerraformerBeacon: r.iron = 25; r.copper = 10; break; // Final
+        case Block::SolarPanel:       break;  // Ja desbloqueado (primeiro modulo do jogo)
+        case Block::WaterExtractor:   r.ice = 18; r.metal = 12; r.copper = 9; break;
+        case Block::OxygenGenerator:  r.ice = 30; r.iron = 30; r.copper = 12; break;
+        case Block::Greenhouse:       r.organic = 24; r.iron = 15; r.ice = 15; break;
+        case Block::CO2Factory:       r.iron = 36; r.coal = 30; r.copper = 18; break;
+        case Block::Habitat:          r.stone = 48; r.iron = 36; r.copper = 24; r.metal = 18; break;
+        case Block::TerraformerBeacon: r.iron = 60; r.crystal = 30; r.components = 24; r.copper = 36; break;
         default: break;
     }
     return r;
@@ -457,7 +551,12 @@ void check_unlocks() {
             g_unlocks.total_iron >= r.iron &&
             g_unlocks.total_coal >= r.coal &&
             g_unlocks.total_copper >= r.copper &&
-            g_unlocks.total_wood >= r.wood) {
+            g_unlocks.total_wood >= r.wood &&
+            g_unlocks.total_ice >= r.ice &&
+            g_unlocks.total_crystal >= r.crystal &&
+            g_unlocks.total_metal >= r.metal &&
+            g_unlocks.total_organic >= r.organic &&
+            g_unlocks.total_components >= r.components) {
             flag = true;
         }
     };
@@ -482,7 +581,9 @@ void check_unlocks() {
             if (g_unlocks.total_stone >= r.stone &&
                 g_unlocks.total_iron >= r.iron &&
                 g_unlocks.total_coal >= r.coal &&
-                g_unlocks.total_copper >= r.copper) {
+                g_unlocks.total_copper >= r.copper &&
+                g_unlocks.total_crystal >= r.crystal &&
+                g_unlocks.total_components >= r.components) {
                 g_unlocks.terraformer_unlocked = true;
             }
         }
@@ -503,6 +604,11 @@ std::string unlock_progress_string(Block b) {
     add("C", g_unlocks.total_coal, r.coal);
     add("Cu", g_unlocks.total_copper, r.copper);
     add("W", g_unlocks.total_wood, r.wood);
+    add("Gl", g_unlocks.total_ice, r.ice);
+    add("Cr", g_unlocks.total_crystal, r.crystal);
+    add("Mt", g_unlocks.total_metal, r.metal);
+    add("Or", g_unlocks.total_organic, r.organic);
+    add("Cp", g_unlocks.total_components, r.components);
     return s;
 }
 
@@ -591,30 +697,35 @@ void update_modules(World& world, float dt) {
         }
     }
 
-    // Count ACTIVE modules (damaged modules don't produce)
-    int solar_count = 0;
-    int energy_gen_count = 0;
-    int water_count = 0;
-    int o2_count = 0;
-    int greenhouse_count = 0;
-    int workshop_count = 0;
-    int co2_factory_count = 0;
-    int habitat_count = 0;
+    // Count ACTIVE modules (damaged modules don't produce) - peso em vez de contagem
+    // simples: um modulo aprimorado (Module::upgraded, tecla R) conta kModuleUpgradeMult
+    // em vez de 1, entao toda formula abaixo (ja escrita como (float)xxx_count * taxa)
+    // ganha o boost automaticamente, sem reescrever nenhuma delas.
+    static constexpr float kModuleUpgradeMult = 1.5f;
+    float solar_count = 0.0f;
+    float energy_gen_count = 0.0f;
+    float water_count = 0.0f;
+    float o2_count = 0.0f;
+    float greenhouse_count = 0.0f;
+    float workshop_count = 0.0f;
+    float co2_factory_count = 0.0f;
+    float habitat_count = 0.0f;
     int beacon_count = 0;
 
     for (const Module& m : g_modules) {
         // Skip damaged modules
         if (m.status == ModuleStatus::Damaged) continue;
 
+        float w = m.upgraded ? kModuleUpgradeMult : 1.0f;
         switch (m.type) {
-            case Block::SolarPanel: solar_count++; break;
-            case Block::EnergyGenerator: energy_gen_count++; break;
-            case Block::WaterExtractor: water_count++; break;
-            case Block::OxygenGenerator: o2_count++; break;
-            case Block::Greenhouse: greenhouse_count++; break;
-            case Block::Workshop: workshop_count++; break;
-            case Block::CO2Factory: co2_factory_count++; break;
-            case Block::Habitat: habitat_count++; break;
+            case Block::SolarPanel: solar_count += w; break;
+            case Block::EnergyGenerator: energy_gen_count += w; break;
+            case Block::WaterExtractor: water_count += w; break;
+            case Block::OxygenGenerator: o2_count += w; break;
+            case Block::Greenhouse: greenhouse_count += w; break;
+            case Block::Workshop: workshop_count += w; break;
+            case Block::CO2Factory: co2_factory_count += w; break;
+            case Block::Habitat: habitat_count += w; break;
             case Block::TerraformerBeacon: beacon_count++; break;
             default: break;
         }
@@ -729,6 +840,11 @@ void update_modules(World& world, float dt) {
         }
     }
 
+    // Cooldown do refino (tecla G, try_refine_at_workshop) - independente de ter Workshop
+    // ou nao (so relevante quando o jogador aciona a acao, mas decrementa sempre por
+    // simplicidade, mesmo padrao de outros timers deste arquivo).
+    if (g_refine_cooldown > 0.0f) g_refine_cooldown = std::max(0.0f, g_refine_cooldown - dt);
+
     // ========== CO2 FACTORIES ==========
     // Release CO2 to warm the planet (costs -2 energy/min)
     if (co2_factory_count > 0) {
@@ -771,9 +887,14 @@ void update_modules(World& world, float dt) {
             if (g_base_energy >= e_cost && g_base_water >= 1.0f) {
                 g_base_energy -= e_cost;
 
+                // Aprimorado: limiar menor = tique mais frequente pro mesmo tempo
+                // acumulado (~1.5x mais rapido) - mesmo boost conceitual do
+                // kModuleUpgradeMult usado nos outros modulos, so que expresso como
+                // limiar em vez de contador (este modulo ja e tratado por instancia).
+                float tick_thr = m.upgraded ? 0.10f : 0.15f;
                 m.t += dt;
-                while (m.t >= 0.15f && g_base_water > 0.5f) {
-                    m.t -= 0.15f;
+                while (m.t >= tick_thr && g_base_water > 0.5f) {
+                    m.t -= tick_thr;
                     g_base_water = std::max(0.0f, g_base_water - 0.5f);
                     terraform_step(world, m.x, m.y);
                     melt_ice_around(world, m.x, m.y, 8);
@@ -884,8 +1005,15 @@ void update_modules(World& world, float dt) {
     float base_temp = -60.0f + g_co2_level * 0.8f;
     g_temperature = lerp(g_temperature, base_temp, 0.001f * dt);
 
-    // Player suit consumption (outside base uses suit tanks faster)
+    // Player suit consumption (outside base uses suit tanks faster; submerso gasta bem mais
+    // rapido - equivale ao "medidor de folego" debaixo d'agua, reaproveitando o O2 do traje
+    // ja existente em vez de criar um stat novo so pra isso).
     float suit_use_mult = at_base ? 0.3f : 1.0f;  // Use less when at base
+    if (g_physics.submerged) suit_use_mult *= 6.0f;
+    // Traje "falhado" (g_suit_integrity zerado, ver main.cpp) amplifica o dreno de
+    // O2/agua/comida - consequencia real mas nao letal na hora, empurra reparo (tecla F)
+    // sem matar o jogador direto so por deixar o traje se degradar.
+    if (g_suit_integrity <= 0.0f) suit_use_mult *= 1.75f;
     float suit_o2_use = 0.12f * suit_use_mult * dt;
     float suit_water_use = 0.06f * suit_use_mult * dt;
     float suit_food_use = 0.03f * suit_use_mult * dt;

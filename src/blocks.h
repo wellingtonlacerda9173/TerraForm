@@ -46,9 +46,21 @@ enum class Block : uint8_t {
     PipeH,         // Horizontal pipe
     PipeV,         // Vertical pipe
     Antenna,       // Communication antenna
+    // Anexado no FIM de proposito: Block e salvo como uint8_t bruto (save_load.cpp), entao
+    // inserir no meio do enum reordenaria (corromperia) saves existentes.
+    Lava,          // Fundo de cratera vulcanica - puramente cosmetico, sem fluxo/dano
+    // Idem: anexado apos Lava (fim real do enum). Recurso de inventario puro (like Metal/
+    // Components), nunca colocado como tile do mundo - so existe em g_inventory, produzido
+    // via try_refine_at_workshop() (modules_building.cpp, tecla G).
+    RefinedAlloy,  // Liga metalica refinada (Oficina) - da a Metal seu 2o uso de verdade
+    // Idem: anexado apos RefinedAlloy (fim real do enum). Item de posse pura (0 ou 1 em
+    // g_inventory, nunca colocado como tile do mundo) - fabricado 1x na Oficina via
+    // try_craft_laser_pistol() (modules_building.cpp, tecla P), selecionavel no hotbar pra
+    // atirar em criaturas (creatures.cpp).
+    LaserPistol,   // Pistola de laser
 };
 
-static constexpr int kBlockTypeCount = (int)Block::Antenna + 1;
+static constexpr int kBlockTypeCount = (int)Block::LaserPistol + 1;
 
 bool is_transparent(Block b);
 

@@ -46,6 +46,53 @@ CraftCost get_module_cost(Block b) {
     return c;
 }
 
+// Upgrade de 1 nivel (nao uma arvore) - ~1/3 do custo de construcao, pesado em
+// Metal/Components/Crystal (mesma carteira de get_suit_repair_cost() abaixo).
+CraftCost get_module_upgrade_cost(Block b) {
+    CraftCost c{};
+    switch (b) {
+        case Block::SolarPanel:       c.metal = 15; c.components = 5;  break;
+        case Block::EnergyGenerator:  c.metal = 20; c.crystal = 10; c.components = 8;  break;
+        case Block::OxygenGenerator:  c.metal = 20; c.components = 10; break;
+        case Block::WaterExtractor:   c.metal = 18; c.components = 8;  break;
+        case Block::Greenhouse:       c.metal = 15; c.components = 8;  break;
+        case Block::Workshop:         c.metal = 25; c.components = 15; break;
+        case Block::CO2Factory:       c.metal = 25; c.components = 12; break;
+        case Block::Habitat:          c.metal = 30; c.components = 15; break;
+        case Block::TerraformerBeacon: c.metal = 40; c.crystal = 20; c.components = 25; break;
+        default: break;
+    }
+    return c;
+}
+
+// "Topup" discreto (nao gasto por segundo) - restaura +25 de integridade do traje.
+CraftCost get_suit_repair_cost() {
+    CraftCost c{};
+    c.metal = 5;
+    c.components = 3;
+    return c;
+}
+
+// Refino no Workshop (tecla G) - consome ferro/cobre/metal, produz Liga Refinada em lote
+// (ver try_refine_at_workshop(), modules_building.cpp).
+CraftCost get_refine_cost() {
+    CraftCost c{};
+    c.iron = 20;
+    c.copper = 15;
+    c.metal = 10;
+    return c;
+}
+
+// Pistola de laser (tecla P, numa Oficina) - item de tecnologia avancada, pesado em
+// Metal/Componentes/Cristal (mesma carteira do upgrade/refino acima).
+CraftCost get_weapon_cost() {
+    CraftCost c{};
+    c.metal = 35;
+    c.components = 20;
+    c.crystal = 15;
+    return c;
+}
+
 std::string module_cost_string(const CraftCost& c) {
     std::string s;
     auto add = [&](const char* name, int need, int have) {
@@ -66,21 +113,6 @@ std::string module_cost_string(const CraftCost& c) {
     add("Organico", c.organic, g_inventory[(int)Block::Organic]);
     add("Comp", c.components, g_inventory[(int)Block::Components]);
     return s.empty() ? "Gratis" : s;
-}
-
-CraftCost module_cost(Block b) {
-    CraftCost c{};
-    switch (b) {
-        case Block::SolarPanel:       c.iron = 3; c.stone = 2; break;
-        case Block::WaterExtractor:   c.iron = 4; c.stone = 4; c.copper = 2; break;
-        case Block::OxygenGenerator:  c.iron = 5; c.coal = 3; c.copper = 2; break;
-        case Block::Greenhouse:       c.iron = 6; c.wood = 4; c.copper = 3; c.stone = 4; break;
-        case Block::CO2Factory:       c.iron = 8; c.coal = 6; c.copper = 4; c.stone = 6; break;
-        case Block::Habitat:          c.iron = 10; c.stone = 12; c.copper = 6; c.wood = 4; break;
-        case Block::TerraformerBeacon: c.iron = 15; c.coal = 10; c.copper = 10; c.stone = 10; break;
-        default: break;
-    }
-    return c;
 }
 
 // ============= can_afford/spend_cost/refund_cost dedup (Fase 1b of the plan) =============

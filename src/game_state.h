@@ -21,6 +21,12 @@
 // main.cpp, not by this feedback subsystem, so moving the instances is out of scope for
 // this stage.
 
+// Duracao de um ciclo dia/noite completo, em segundos reais. Era duplicada como um literal
+// static constexpr separado em main.cpp/sky.cpp/lighting.cpp/minimap.cpp/modules_building.cpp/
+// ui_menu.cpp (6 copias identicas) - consolidada aqui numa unica fonte, ja que game_state.h ja
+// e incluido (direta ou transitivamente) por todos esses arquivos.
+static constexpr float kDayLength = 240.0f; // segundos (era 150 - mais tempo pra ver o ceu noturno)
+
 // ---- Base alert entries (g_alerts vector stays owned by main.cpp) ----
 struct Alert {
     std::string message;
@@ -35,6 +41,14 @@ struct UnlockProgress {
     int total_coal = 0;
     int total_copper = 0;
     int total_wood = 0;
+    // Rebalanceamento de unlock: os thresholds antigos nunca checavam esses 5 recursos
+    // mesmo quando o modulo realmente precisa deles (ex. Extrator de Agua precisa de
+    // gelo/metal, mas o unlock so olhava pedra) - ver get_unlock_requirement().
+    int total_ice = 0;
+    int total_crystal = 0;
+    int total_metal = 0;
+    int total_organic = 0;
+    int total_components = 0;
 
     bool solar_unlocked = false;
     bool water_extractor_unlocked = false;
@@ -66,6 +80,23 @@ struct GameSettings {
     bool invert_y = false;
     float brightness = 1.0f;
     float contrast = 1.0f;
+
+    // Audio - ver audio.h/.cpp (apply_audio_settings() empurra estes valores pro
+    // Music/Sound de verdade sempre que mudam, tanto no menu de Config quanto ao
+    // carregar/iniciar um save).
+    float music_volume = 0.6f;   // 0.0 - 1.0
+    float sfx_volume = 0.8f;     // 0.0 - 1.0
+    bool music_enabled = true;
+    bool sfx_enabled = true;
+
+    // Espelham os 4 campos de LightingSettings (lighting.h) expostos no menu - g_lighting
+    // continua sendo o valor "ao vivo" que o pipeline de render le, estes aqui existem so'
+    // pra persistir a escolha do jogador entre sessoes (ver config_io.cpp/reload_game_settings
+    // e ui_menu.cpp, que mantem os dois em sincronia a cada mudanca no menu).
+    bool lighting_enabled = true;
+    bool lighting_shadows_enabled = true;
+    float lighting_bloom_intensity = 0.55f;
+    float lighting_vignette_intensity = 0.30f;
 };
 
 // ---- Floating collect popup (g_collect_popups vector now owned by game_state.cpp) ----

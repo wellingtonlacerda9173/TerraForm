@@ -6,6 +6,7 @@
 #include "world.h"              // World, g_world, in_bounds/get, surface_height_at
 #include "player_physics.h"     // Player, g_player, get_player_render_pos/get_player_render_y
 #include "modules_building.h"   // Module, ModuleStatus, g_modules
+#include "game_state.h"         // kDayLength
 
 #include <algorithm>
 #include <cmath>
@@ -18,10 +19,7 @@
 extern float g_day_time;
 extern float g_atmosphere;
 
-// kDayLength: own copy of the same compile-time literal main.cpp keeps (and now sky.cpp too)
-// - not shared via extern since it's compile-time state, not mutable, same pattern as
-// kDayLength in modules_building.cpp/minimap.cpp.
-static constexpr float kDayLength = 150.0f; // seconds
+// kDayLength agora vem de game_state.h (era uma copia local aqui).
 
 // Vetor de luzes ativas no frame. Extern-declared in lighting.h (render_world's F3 debug
 // overlay reads it directly); defined (non-static) here.
@@ -157,8 +155,15 @@ static Light2D get_module_light(const Module& mod) {
 
 // Calcular luz ambiente baseada no ciclo dia/noite
 static float compute_ambient_light() {
+    // Usa compute_daylight() (math_core.cpp) - a MESMA formula que posiciona o sol de
+    // verdade em render_alien_sky() (sky.cpp). Antes esse arquivo reimplementava sua
+    // propria curva (sin(day_phase*pi), so positiva o ciclo INTEIRO) em vez de reaproveitar
+    // a de verdade (sin(day_phase*2*pi - pi/2), zero por metade do ciclo) - as duas
+    // discordavam sobre quando e "dia" (bug real, mesmo nao sendo a causa principal das
+    // manchas escuras reportadas - essas vem do AO por profundidade/inclinacao logo
+    // abaixo, independente de hora do dia de proposito).
     float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
-    float daylight = std::fmax(0.0f, std::sin(day_phase * kPi));
+    float daylight = compute_daylight(day_phase);
 
     // Interpolar entre luz minima (noite) e maxima (dia)
     float ambient = lerp(g_lighting.ambient_min, g_lighting.ambient_max, daylight);
@@ -171,8 +176,10 @@ static float compute_ambient_light() {
 
 // Obter cor da luz natural baseada no ciclo dia/noite
 static void get_natural_light_color(float& r, float& g, float& b) {
+    // Mesma curva de compute_ambient_light() acima (compute_daylight(), math_core.cpp) -
+    // consistente com o sol de verdade do ceu (sky.cpp).
     float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
-    float daylight = std::fmax(0.0f, std::sin(day_phase * kPi));
+    float daylight = compute_daylight(day_phase);
 
     if (daylight > 0.7f) {
         // Meio-dia: branco/amarelo quente
@@ -553,8 +560,18 @@ float compute_depth_factor(float tile_height, float player_height) {
     float depth_diff = player_height - tile_height;
     if (depth_diff <= 0.0f) return 1.0f;
 
+    // A forca desse escurecimento (AO por profundidade) era fixa - disparava igual em
+    // pleno meio-dia ou de noite, criando manchas escuras acompanhando o relevo mesmo com
+    // o sol a pino (bug reportado: "a noite esta chegando mesmo com o sol no ceu" - nao
+    // era noite de verdade, era esse AO sem nenhuma relacao com hora do dia). Em dia cheio
+    // a forca cai bastante (35% do normal); de noite continua no maximo, ja que tudo esta
+    // escuro mesmo e nao ha "manchas" pra destacar.
+    float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
+    float daylight = compute_daylight(day_phase);
+    float darkening_strength = g_lighting.depth_darkening * lerp(1.0f, 0.35f, daylight);
+
     // Escurecer areas mais baixas que o jogador
-    float factor = 1.0f - clamp01(depth_diff / 8.0f) * g_lighting.depth_darkening;
+    float factor = 1.0f - clamp01(depth_diff / 8.0f) * darkening_strength;
     return std::max(0.2f, factor);
 }
 

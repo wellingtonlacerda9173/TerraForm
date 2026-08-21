@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Globais de estado de jogo ainda definidas em main.cpp (extracao completa para
@@ -70,6 +71,19 @@ void World::gen() {
     std::vector<float> ridge_map(cell_count, 0.0f);
     std::vector<float> valley_map(cell_count, 0.0f);
     std::vector<uint8_t> biome_map(cell_count, 0);
+    // Preenchido no Passo 1.5 (vulcoes), lido no Passo 5 pra pintar o fundo da cratera com
+    // Block::Lava - precisa sobreviver alem do escopo do bloco que o gera.
+    std::vector<std::pair<int, int>> volcano_centers;
+    static constexpr float kVolcanoCraterRadius = 9.0f;
+    // So o piso baixo da cratera vira Lava (nao a borda/parede rochosa inteira dos 9 tiles).
+    static constexpr float kVolcanoLavaRadius = 5.0f;
+    // Chamines vulcanicas pequenas (pedido do jogador: "coloque lava e pequenas chamines
+    // vulcanicas em certos biomas") - diferentes dos vulcoes grandes acima (raio 42,
+    // erguem o terreno): sao so' um pontinho de lava (raio ~1.5) cravado num bioma rochoso,
+    // sem sculpir heightmap nenhum - populado logo apos os vulcoes grandes (Passo 1.5),
+    // lido no Passo 5 igual a volcano_centers.
+    std::vector<std::pair<int, int>> vent_centers;
+    static constexpr float kVentLavaRadius = 1.5f;
 
     // === Passo 1: macro shape (continentes, bacias, vales, cordilheiras) ===
     for (int y = 0; y < h; ++y) {
@@ -85,7 +99,7 @@ void World::gen() {
             float macro = fbm(wx * cfg.macro_scale, wy * cfg.macro_scale, 6);
             float basin = 1.0f - fbm(wx * (cfg.macro_scale * 1.55f) + 1400.0f,
                                      wy * (cfg.macro_scale * 1.55f) + 1400.0f, 4);
-            float ridge = ridged_fbm(wx * cfg.ridge_scale + 700.0f, wy * cfg.ridge_scale + 700.0f, 5);
+            float ridge = ridged_fbm(wx * cfg.ridge_scale + 700.0f, wy * cfg.ridge_scale + 700.0f, 6);
             float valley = 1.0f - ridged_fbm(wx * cfg.valley_scale + 2500.0f, wy * cfg.valley_scale + 2500.0f, 4);
             float detail = fbm(wx * cfg.detail_scale + 3100.0f, wy * cfg.detail_scale + 3100.0f, 4);
             float hills = fbm(wx * (cfg.detail_scale * 0.52f) + 900.0f,
@@ -99,7 +113,10 @@ void World::gen() {
 
             float plains_h = 0.30f + (macro - 0.5f) * 0.12f + (hills - 0.5f) * 0.11f + (detail - 0.5f) * 0.07f;
             float valley_h = 0.24f + (macro - 0.5f) * 0.08f + (detail - 0.5f) * 0.05f - valley_w * 0.23f - basin * 0.08f;
-            float mountain_h = 0.42f + std::pow(ridge, 1.85f) * 0.60f + (hills - 0.5f) * 0.08f;
+            // Expoente mais baixo (1.85 -> 1.65) alarga o "planalto quase no topo" que sobrevive
+            // as passadas de erosao termica/hidraulica abaixo - antes o pico ficava fino demais
+            // (1-2 celulas) e a erosao sempre o achatava antes de cruzar snow_height.
+            float mountain_h = 0.42f + std::pow(ridge, 1.65f) * 0.60f + (hills - 0.5f) * 0.08f;
             float plateau_h = 0.52f + std::pow(macro, 1.15f) * 0.30f + (detail - 0.5f) * 0.04f;
             plateau_h = lerp(plateau_h, std::floor(plateau_h * 9.0f) / 9.0f, cfg.plateau_flatten);
 
@@ -145,6 +162,122 @@ void World::gen() {
             ridge_map[idx] = ridge;
             valley_map[idx] = valley;
             biome_map[idx] = biome;
+        }
+    }
+
+    // === Passo 1.5: vulcoes (relevo geometrico esparso - cone + cratera no pico, plantado
+    // ANTES da erosao pra "assentar" e ficar com bordas naturais, igual as crateras de
+    // impacto do Passo 1 acima). Sementes: maximos locais em celulas de bioma Montanha com
+    // ridge bem alto, espacados pra nao empilhar 2 vulcoes vizinhos. Puramente cosmetico -
+    // sem lava simulada, so um bloco Lava estatico no fundo da cratera (ver Passo 5/blocks.cpp).
+    {
+        struct SeedCandidate { int x, y; float score; };
+        std::vector<SeedCandidate> candidates;
+        for (int y = 2; y < h - 2; ++y) {
+            for (int x = 2; x < w - 2; ++x) {
+                size_t i = index_of(x, y);
+                // NAO exigir biome_map[i]==2 (Montanha) - medido com uma sonda standalone
+                // (mesmas formulas deste arquivo): biome Montanha cobre so' ~0.18% do mapa
+                // (e' uma classificacao por "quem venceu" entre 4 pesos independentes, nao
+                // o mesmo criterio de elevacao que deixa o relevo visualmente montanhoso),
+                // entao exigi-lo aqui reduzia os candidatos de ~18 mil pra ~30 e so' 2 dos 7
+                // vulcoes pedidos sobreviviam ao espacamento minimo - o resto do mapa nunca
+                // tinha vulcao nenhum pra achar. ridge+altura direto e' o criterio certo pra
+                // "isso parece um pico" (o que realmente importa aqui).
+                if (ridge_map[i] <= 0.60f || heights[i] <= 0.55f) continue;
+                float hc = heights[i];
+                bool is_max = true;
+                for (int dy = -1; dy <= 1 && is_max; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (dx == 0 && dy == 0) continue;
+                        if (heights[index_of(x + dx, y + dy)] > hc) { is_max = false; break; }
+                    }
+                }
+                if (is_max) candidates.push_back({x, y, hc});
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(), [](const SeedCandidate& a, const SeedCandidate& b) {
+            return a.score > b.score;
+        });
+
+        int volcano_count = std::max(0, cfg.volcano_seed_count);
+        // 220 -> 150: com o filtro de candidatos agora medido (~250+ picos elegiveis num
+        // mapa de 3072x1536, ver comentario acima), 150 ja da espaco de sobra pra espalhar
+        // os volcano_seed_count vulcoes pelo mapa inteiro sem 2 ficarem colados.
+        const float kVolcanoMinSpacing2 = 150.0f * 150.0f;
+        std::vector<SeedCandidate> volcanoes;
+        for (const auto& c : candidates) {
+            if ((int)volcanoes.size() >= volcano_count) break;
+            bool far_enough = true;
+            for (const auto& v : volcanoes) {
+                float dx = (float)(c.x - v.x), dy = (float)(c.y - v.y);
+                if (dx * dx + dy * dy < kVolcanoMinSpacing2) { far_enough = false; break; }
+            }
+            if (far_enough) volcanoes.push_back(c);
+        }
+
+        const float kVolcanoRadius = 42.0f;
+        const float kVolcanoHeightBoost = 0.30f;
+        for (const auto& v : volcanoes) {
+            volcano_centers.push_back({v.x, v.y});
+            int rad = (int)kVolcanoRadius + 2;
+            int x0 = std::max(1, v.x - rad), x1 = std::min(w - 2, v.x + rad);
+            int y0 = std::max(1, v.y - rad), y1 = std::min(h - 2, v.y + rad);
+            for (int y = y0; y <= y1; ++y) {
+                for (int x = x0; x <= x1; ++x) {
+                    float dx = (float)(x - v.x), dy = (float)(y - v.y);
+                    float dist = std::sqrt(dx * dx + dy * dy);
+
+                    float cone = smoothstep01(kVolcanoRadius, 0.0f, dist) * kVolcanoHeightBoost;
+
+                    float crater_t = clamp01(1.0f - dist / kVolcanoCraterRadius);
+                    float v_crater_core = smoothstep01(0.55f, 0.90f, crater_t);
+                    float v_crater_rim = smoothstep01(0.25f, 0.55f, crater_t) * (1.0f - v_crater_core);
+
+                    size_t i = index_of(x, y);
+                    heights[i] = clamp01(heights[i] + cone -
+                                          v_crater_core * (kVolcanoHeightBoost + 0.12f) +
+                                          v_crater_rim * 0.08f);
+                }
+            }
+        }
+
+        // Chamines vulcanicas pequenas: espalhadas em biomas rochosos (Montanha=2/
+        // Plato=3), longe da base/vulcoes grandes/umas das outras - amostragem por
+        // rejeicao (mesmo espirito da selecao de POIs mais abaixo), sem alterar o
+        // heightmap (so' um pontinho de lava, nao uma cratera).
+        {
+            const int kVentCount = 18;
+            const float kVentMinSpacing2 = 70.0f * 70.0f;
+            const float kVentVolcanoMinDist2 = 60.0f * 60.0f;
+            const float kVentBaseExclusion2 = 150.0f * 150.0f;
+            int cx = w / 2, cy = h / 2; // centro do mapa - a base sempre nasce por perto
+            int attempts = 0;
+            while ((int)vent_centers.size() < kVentCount && attempts < 4000) {
+                ++attempts;
+                int x = 2 + (int)(rng_next_u32() % (uint32_t)std::max(1, w - 4));
+                int y = 2 + (int)(rng_next_u32() % (uint32_t)std::max(1, h - 4));
+                size_t vi = index_of(x, y);
+                uint8_t vbiome = biome_map[vi];
+                if (vbiome != 2 && vbiome != 3) continue;
+
+                float dxc = (float)(x - cx), dyc = (float)(y - cy);
+                if (dxc * dxc + dyc * dyc < kVentBaseExclusion2) continue;
+
+                bool ok = true;
+                for (const auto& vc : volcano_centers) {
+                    float dx = (float)(x - vc.first), dy = (float)(y - vc.second);
+                    if (dx * dx + dy * dy < kVentVolcanoMinDist2) { ok = false; break; }
+                }
+                if (!ok) continue;
+                for (const auto& vc : vent_centers) {
+                    float dx = (float)(x - vc.first), dy = (float)(y - vc.second);
+                    if (dx * dx + dy * dy < kVentMinSpacing2) { ok = false; break; }
+                }
+                if (!ok) continue;
+
+                vent_centers.push_back({x, y});
+            }
         }
     }
 
@@ -220,6 +353,193 @@ void World::gen() {
         }
     }
 
+    // === Passo 3.5: rios e lagos (tracado por steepest-descent a partir de picos de
+    // montanha, DEPOIS de toda erosao/suavizacao pra o canal nao ser borrado de volta).
+    // river_map e so um array de trabalho desta funcao (nao um campo de World) - o resultado
+    // final vira Block::Water/Ice normal nos arrays tiles/ground do Passo 5, exatamente como
+    // a agua do nivel do mar ja funciona hoje, entao nao precisa de nenhuma mudanca de save.
+    std::vector<uint8_t> river_map(cell_count, 0);
+    {
+        struct RiverSeed { int x, y; float score; };
+        std::vector<RiverSeed> candidates;
+        for (int y = 2; y < h - 2; ++y) {
+            for (int x = 2; x < w - 2; ++x) {
+                size_t i = index_of(x, y);
+                if (biome_map[i] != 2 || heights[i] < 0.55f) continue;
+                float hc = heights[i];
+                bool is_max = true;
+                for (int dy = -1; dy <= 1 && is_max; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (dx == 0 && dy == 0) continue;
+                        if (heights[index_of(x + dx, y + dy)] > hc) { is_max = false; break; }
+                    }
+                }
+                if (is_max) candidates.push_back({x, y, hc});
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(), [](const RiverSeed& a, const RiverSeed& b) {
+            return a.score > b.score;
+        });
+
+        int river_count = std::max(0, cfg.river_seed_count);
+        const float kRiverMinSpacing2 = 150.0f * 150.0f;
+        std::vector<RiverSeed> seeds;
+        for (const auto& c : candidates) {
+            if ((int)seeds.size() >= river_count) break;
+            bool far_enough = true;
+            for (const auto& s : seeds) {
+                float dx = (float)(c.x - s.x), dy = (float)(c.y - s.y);
+                if (dx * dx + dy * dy < kRiverMinSpacing2) { far_enough = false; break; }
+            }
+            if (far_enough) seeds.push_back(c);
+        }
+
+        // Preenche um "lago" limitado (BFS num raio pequeno, sem watershed de mapa inteiro)
+        // quando um rio para num poco sem saida - nivela tudo que ficou abaixo da borda de
+        // saida mais baixa encontrada.
+        auto flood_fill_lake = [&](int sx, int sy) {
+            const int R = 60;
+            int gx0 = std::max(1, sx - R), gx1 = std::min(w - 2, sx + R);
+            int gy0 = std::max(1, sy - R), gy1 = std::min(h - 2, sy + R);
+            int gw = gx1 - gx0 + 1;
+            auto local_idx = [&](int x, int y) -> size_t {
+                return (size_t)(y - gy0) * (size_t)gw + (size_t)(x - gx0);
+            };
+            std::vector<uint8_t> visited((size_t)gw * (size_t)(gy1 - gy0 + 1), 0);
+            std::vector<std::pair<int, int>> queue;
+            std::vector<std::pair<int, int>> filled;
+            queue.push_back({sx, sy});
+            visited[local_idx(sx, sy)] = 1;
+            float sink_h = heights[index_of(sx, sy)];
+            float rim_height = 2.0f;
+            const int kNx4[4] = {1, -1, 0, 0};
+            const int kNy4[4] = {0, 0, 1, -1};
+            size_t qi = 0;
+            while (qi < queue.size() && filled.size() < 2500) {
+                auto [px, py] = queue[qi++];
+                filled.push_back({px, py});
+                for (int k = 0; k < 4; ++k) {
+                    int nx2 = px + kNx4[k], ny2 = py + kNy4[k];
+                    if (nx2 < gx0 || nx2 > gx1 || ny2 < gy0 || ny2 > gy1) continue;
+                    size_t li = local_idx(nx2, ny2);
+                    if (visited[li]) continue;
+                    visited[li] = 1;
+                    float nh = heights[index_of(nx2, ny2)];
+                    if (nh <= sink_h + 0.05f) {
+                        queue.push_back({nx2, ny2});
+                    } else {
+                        rim_height = std::min(rim_height, nh);
+                    }
+                }
+            }
+            // Nivela TODO o lago numa unica altura (a da borda de saida mais baixa) - um lago
+            // de verdade se acomoda num unico nivel plano, nao segue o relevo irregular do
+            // fundo tile a tile. Antes disso, cada tile so era clampado (min(altura_propria,
+            // borda)) e mantinha sua propria altura de heightmap quando ja estava abaixo da
+            // borda - o lago ficava um fundo irregular ("buraco"), e tiles vizinhos com
+            // alturas quase iguais mas nao identicas geravam paredes de altura quase-zero que
+            // davam z-fighting (piscando) nas bordas da agua.
+            float lake_hn = rim_height - 0.01f;
+            for (const auto& p : filled) {
+                size_t i = index_of(p.first, p.second);
+                river_map[i] = 1;
+                heights[i] = lake_hn;
+            }
+        };
+
+        const int kNx8[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+        const int kNy8[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+        float sea_hn = (float)(sea_h - min_h_i) / (float)(max_h_i - min_h_i);
+
+        for (const auto& seed : seeds) {
+            int cx = seed.x, cy = seed.y;
+            for (int step = 0; step < 4000; ++step) {
+                size_t ci = index_of(cx, cy);
+                for (int oy = -1; oy <= 1; ++oy) {
+                    for (int ox = -1; ox <= 1; ++ox) {
+                        int nx2 = cx + ox, ny2 = cy + oy;
+                        if (nx2 < 1 || nx2 >= w - 1 || ny2 < 1 || ny2 >= h - 1) continue;
+                        size_t ni = index_of(nx2, ny2);
+                        river_map[ni] = 1;
+                        heights[ni] = clamp01(std::min(heights[ni], heights[ci]) - 0.012f);
+                    }
+                }
+
+                if (heights[ci] <= sea_hn) break; // chegou ao mar
+
+                int best_nx = -1, best_ny = -1;
+                float best_h = heights[ci];
+                for (int k = 0; k < 8; ++k) {
+                    int nx2 = cx + kNx8[k], ny2 = cy + kNy8[k];
+                    if (nx2 < 1 || nx2 >= w - 1 || ny2 < 1 || ny2 >= h - 1) continue;
+                    float nh = heights[index_of(nx2, ny2)];
+                    if (nh < best_h) { best_h = nh; best_nx = nx2; best_ny = ny2; }
+                }
+
+                if (best_nx < 0) {
+                    flood_fill_lake(cx, cy); // poco sem saida - vira lago, encerra o rio
+                    break;
+                }
+                cx = best_nx;
+                cy = best_ny;
+            }
+        }
+    }
+
+    // === Passo 3.6: rios de lava escorrendo vulcao abaixo ("vulcao derramando lava" -
+    // pedido do jogador) - mesma tecnica de steepest-descent dos rios acima (precisa rodar
+    // depois da erosao/suavizacao, senao o canal fica borrado de volta), so' que a partir da
+    // borda da cratera de cada vulcao grande em vez de picos de montanha, e sem carvar o
+    // heightmap (lava escorre POR CIMA do relevo existente do cone, nao abre canal, igual a
+    // piscina estatica da cratera ja funciona hoje). lava_flow_map e' lido no Passo 5 junto
+    // de volcano_centers/vent_centers (mesmo bool in_volcano_lava).
+    std::vector<uint8_t> lava_flow_map(cell_count, 0);
+    if (!volcano_centers.empty()) {
+        const int kNx8L[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+        const int kNy8L[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+        float sea_hn = (float)(sea_h - min_h_i) / (float)(max_h_i - min_h_i);
+        // 3 riachos de lava por vulcao, saindo em direcoes bem separadas da borda da
+        // cratera (kVolcanoCraterRadius=9) - nao precisa de trigonometria, offsets fixos
+        // ja dao angulos bem espalhados ao redor do cone.
+        const int kFlowStartOffsets[3][2] = { {20, 0}, {-14, 14}, {-14, -14} };
+
+        for (const auto& vc : volcano_centers) {
+            for (const auto& off : kFlowStartOffsets) {
+                int cx = vc.first + off[0];
+                int cy = vc.second + off[1];
+                if (cx < 2 || cx >= w - 2 || cy < 2 || cy >= h - 2) continue;
+
+                for (int step = 0; step < 60; ++step) {
+                    size_t ci = index_of(cx, cy);
+                    if (river_map[ci]) break; // nao invade rio/lago/mar ja tracado
+
+                    for (int oy = -1; oy <= 1; ++oy) {
+                        for (int ox = -1; ox <= 1; ++ox) {
+                            int nx2 = cx + ox, ny2 = cy + oy;
+                            if (nx2 < 1 || nx2 >= w - 1 || ny2 < 1 || ny2 >= h - 1) continue;
+                            size_t ni = index_of(nx2, ny2);
+                            if (!river_map[ni]) lava_flow_map[ni] = 1;
+                        }
+                    }
+
+                    if (heights[ci] <= sea_hn + 0.02f) break; // nao chega no nivel do mar
+
+                    int best_nx = -1, best_ny = -1;
+                    float best_h = heights[ci];
+                    for (int k = 0; k < 8; ++k) {
+                        int nx2 = cx + kNx8L[k], ny2 = cy + kNy8L[k];
+                        if (nx2 < 1 || nx2 >= w - 1 || ny2 < 1 || ny2 >= h - 1) continue;
+                        float nh = heights[index_of(nx2, ny2)];
+                        if (nh < best_h) { best_h = nh; best_nx = nx2; best_ny = ny2; }
+                    }
+                    if (best_nx < 0) break; // poco local - lava para e forma uma piscina pequena
+                    cx = best_nx;
+                    cy = best_ny;
+                }
+            }
+        }
+    }
+
     // === Passo 5: converter heightmap e definir solo por bioma ===
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
@@ -227,15 +547,42 @@ void World::gen() {
             float hn = heights[i];
             int h_val = min_h_i + (int)std::lround(hn * (float)(max_h_i - min_h_i));
             int16_t th = (int16_t)std::clamp(h_val, min_h_i, max_h_i);
-            set_height(x, y, th);
 
             float temp = temp_map[i];
             float moisture = moist_map[i];
             uint8_t biome = biome_map[i];
 
             Block g = Block::Dirt;
-            if ((int)th <= sea_h) {
+            bool in_volcano_lava = false;
+            for (const auto& vc : volcano_centers) {
+                float vdx = (float)(x - vc.first), vdy = (float)(y - vc.second);
+                if (vdx * vdx + vdy * vdy <= kVolcanoLavaRadius * kVolcanoLavaRadius) {
+                    in_volcano_lava = true;
+                    break;
+                }
+            }
+            if (!in_volcano_lava) {
+                for (const auto& vc : vent_centers) {
+                    float vdx = (float)(x - vc.first), vdy = (float)(y - vc.second);
+                    if (vdx * vdx + vdy * vdy <= kVentLavaRadius * kVentLavaRadius) {
+                        in_volcano_lava = true; // reusa o mesmo nome/ramo - mesmo efeito (Lava)
+                        break;
+                    }
+                }
+            }
+            if (!in_volcano_lava && lava_flow_map[i]) in_volcano_lava = true; // riacho de lava (Passo 3.6)
+            if (in_volcano_lava) {
+                g = Block::Lava;
+            } else if (river_map[i] || (int)th <= sea_h) {
                 g = (temp < 0.44f) ? Block::Ice : Block::Water;
+                // Mar aberto (nao veio de rio/lago, que ja foram nivelados acima) tambem
+                // precisa ser uma superficie plana no nivel do mar - mesma razao do
+                // achatamento de lago em flood_fill_lake: sem isso, qualquer tile que
+                // simplesmente ficou baixo o bastante no heightmap virava agua na sua
+                // propria altura crua (bumpy), lendo como buraco em vez de mar/lago, e
+                // causando paredes quase-zero (z-fighting/piscando) entre tiles de agua
+                // vizinhos com alturas quase iguais.
+                if (!river_map[i]) th = (int16_t)sea_h;
             } else if (biome == 4 || (int)th >= snow_h || temp < 0.25f) {
                 float snow_var = fbm((float)x * 0.045f + 7600.0f, (float)y * 0.045f + 7600.0f, 2);
                 g = (snow_var > 0.56f) ? Block::Ice : Block::Snow;
@@ -249,6 +596,7 @@ void World::gen() {
                 g = Block::Dirt;
             }
 
+            set_height(x, y, th);
             set_ground(x, y, g);
             set(x, y, g);
         }
@@ -259,7 +607,9 @@ void World::gen() {
         for (int x = 1; x < w - 1; ++x) {
             Block g = get_ground(x, y);
             int16_t th = height_at(x, y);
-            if ((int)th <= sea_h && g == Block::Water) continue;
+            // Cobre mar + rios/lagos (agua acima do nivel do mar) + gelo + lava - nenhum
+            // desses deve ganhar minerio/rocha/cristal/organico por cima.
+            if (g == Block::Water || g == Block::Ice || g == Block::Lava) continue;
 
             float fx = (float)x;
             float fy = (float)y;
@@ -286,6 +636,11 @@ void World::gen() {
             float ore1 = fbm(fx * 0.11f + 200.0f, fy * 0.11f + 200.0f, 3);
             float ore2 = fbm(fx * 0.09f + 300.0f, fy * 0.09f + 300.0f, 3);
             float ore3 = fbm(fx * 0.14f + 400.0f, fy * 0.14f + 400.0f, 2);
+            // Campos de cristal bioluminescente: ruido de baixa frequencia (era minerio
+            // esparso via ore3>0.91) vira uma zona contigua e reconhecivel no bioma gelado,
+            // em vez de "specks" isolados - ore3 continua intocado (ainda alimenta o limiar
+            // de Metal abaixo).
+            float crystal_field = fbm(fx * 0.020f + 900.0f, fy * 0.020f + 900.0f, 3);
 
             if (ore1 > 0.88f && (int)th > sea_h + 2) {
                 set(x, y, Block::Iron);
@@ -293,7 +648,7 @@ void World::gen() {
                 set(x, y, Block::Coal);
             } else if (ore2 > 0.89f && (int)th > sea_h + 2) {
                 set(x, y, Block::Copper);
-            } else if (ore3 > 0.91f && (g == Block::Snow || (int)th > snow_h - 2)) {
+            } else if (crystal_field > 0.58f && (g == Block::Snow || (int)th > snow_h - 2)) {
                 set(x, y, Block::Crystal);
             } else if (ore2 > 0.93f && ore3 > 0.93f) {
                 set(x, y, Block::Metal);
@@ -303,8 +658,11 @@ void World::gen() {
 
             if (get(x, y) == get_ground(x, y) && (int)th > sea_h + 1 && (int)th < snow_h - 2) {
                 float moisture = moist_map[index_of(x, y)];
-                float org = fbm(fx * 0.10f + 500.0f, fy * 0.10f + 500.0f, 2);
-                if (moisture > 0.70f && org > 0.92f) {
+                // Bolsoes de flora alienigena: mesmo tratamento - ruido de baixa frequencia
+                // (era org>0.92 a 0.10 de escala) vira clareiras verdes reconheciveis na
+                // faixa temperada/umida, mantendo o mesmo gate de umidade de antes.
+                float organic_field = fbm(fx * 0.018f + 950.0f, fy * 0.018f + 950.0f, 3);
+                if (moisture > 0.70f && organic_field > 0.55f) {
                     set(x, y, Block::Organic);
                 }
             }
@@ -316,6 +674,122 @@ void World::gen() {
                     set(x, y, Block::Components);
                 }
             }
+        }
+    }
+
+    // === Passo 7: Pontos de Interesse (POIs) - pequenos caches de loot pra dar um motivo
+    // real pra explorar alem de minerio repetido (levantamento desta sessao: "o mundo nao
+    // tem nada pra descobrir"). Decoracao com blocos ja existentes no jogo, ciclando 4
+    // arquetipos visuais (RocketNose/Fin/Window "sonda destruida", Antenna/DomeFrame/PipeH/
+    // PipeV "rele antigo", RocketHull/Engine/Door "casco esmagado", DomeGlass/LandingPad
+    // "cupula soterrada") - ja tem textura/cor/is_base_structure completos (blocks.cpp/
+    // textures.cpp), entao ja saem nao-mineraveis de graca (so decoracao) e o minimapa ja
+    // colore especial qualquer tile is_base_structure - o POI vira visivel ao ser explorado,
+    // sem UI nova (e o scanner - tecla T, minimap.cpp - acha o mais proximo de proposito). O
+    // loot em si e minerio de verdade cravado no terreno (Crystal/Metal/Components via set()),
+    // NAO um ItemDrop solto - g_drops nunca e salvo (save_load.cpp so faz clear() no load),
+    // enquanto blocos de tile ja tem save/load de graca e mineracao ja dispara
+    // spawn_item_drop() pelo caminho normal (building_interaction.cpp), zero mudanca la.
+    {
+        constexpr int kPoiCount = 8; // era 4 - validado por simulacao que o orcamento de
+                                     // 400 tentativas (mesmas regras abaixo) da conta
+        // Longe do centro do mapa - a base sempre nasce dentro de uma caixa ~+-70x+-45 ao
+        // redor desse centro (generate_base(), modules_building.cpp) - e longe uns dos
+        // outros, mesmo espirito de kVolcanoMinSpacing2 acima (Passo 1.5).
+        constexpr float kPoiMinDistFromCenter2 = 180.0f * 180.0f;
+        constexpr float kPoiMinSpacing2 = 220.0f * 220.0f;
+        std::vector<std::pair<int, int>> poi_centers;
+        int cx_map = w / 2, cy_map = h / 2;
+
+        int attempts = 0;
+        while ((int)poi_centers.size() < kPoiCount && attempts < 400) {
+            ++attempts;
+            int px = 60 + (int)(rng_next_u32() % (uint32_t)std::max(1, w - 120));
+            int py = 60 + (int)(rng_next_u32() % (uint32_t)std::max(1, h - 120));
+
+            float dcx = (float)(px - cx_map), dcy = (float)(py - cy_map);
+            if (dcx * dcx + dcy * dcy < kPoiMinDistFromCenter2) continue;
+
+            bool far_enough = true;
+            for (const auto& p : poi_centers) {
+                float dx = (float)(px - p.first), dy = (float)(py - p.second);
+                if (dx * dx + dy * dy < kPoiMinSpacing2) { far_enough = false; break; }
+            }
+            if (!far_enough) continue;
+
+            Block surf = get_ground(px, py);
+            if (surf == Block::Water || surf == Block::Ice || surf == Block::Lava) continue;
+
+            int he = (int)height_at(px + 1, py), hw = (int)height_at(px - 1, py);
+            int hn = (int)height_at(px, py - 1), hs = (int)height_at(px, py + 1);
+            int slope = std::abs(he - hw) + std::abs(hs - hn);
+            if (slope > 6) continue; // muito inclinado
+
+            poi_centers.push_back({px, py});
+        }
+
+        for (size_t i = 0; i < poi_centers.size(); ++i) {
+            int px = poi_centers[i].first, py = poi_centers[i].second;
+            int archetype = (int)(i % 4);
+
+            switch (archetype) {
+                case 0: // "sonda destruida"
+                    set(px, py, Block::RocketNose);
+                    set(px + 1, py, Block::RocketFin);
+                    set(px - 1, py, Block::RocketFin);
+                    set(px, py + 1, Block::RocketWindow);
+                    break;
+                case 1: // "rele antigo"
+                    set(px, py, Block::Antenna);
+                    set(px + 1, py, Block::DomeFrame);
+                    set(px - 1, py, Block::DomeFrame);
+                    set(px, py + 1, Block::PipeH);
+                    set(px, py - 1, Block::PipeV);
+                    break;
+                case 2: // "casco esmagado" - casco largo (3 tiles) com motor e escotilha
+                    set(px, py, Block::RocketHull);
+                    set(px + 1, py, Block::RocketHull);
+                    set(px - 1, py, Block::RocketHull);
+                    set(px, py + 1, Block::RocketEngine);
+                    set(px, py - 1, Block::RocketDoor);
+                    break;
+                default: // "cupula soterrada" - cupula com destroços de plataforma ao redor
+                    set(px, py, Block::DomeGlass);
+                    set(px + 1, py, Block::LandingPad);
+                    set(px - 1, py, Block::LandingPad);
+                    set(px, py + 1, Block::LandingPad);
+                    set(px, py - 1, Block::LandingPad);
+                    break;
+            }
+
+            static const int kLootOffsets[5][2] = {{2, 0}, {-2, 0}, {0, 2}, {0, -2}, {1, 1}};
+            static const Block kLootBlocks[5] = {
+                Block::Crystal, Block::Crystal, Block::Metal, Block::Metal, Block::Components
+            };
+            for (int j = 0; j < 5; ++j) {
+                int lx = px + kLootOffsets[j][0];
+                int ly = py + kLootOffsets[j][1];
+                if (!in_bounds(lx, ly)) continue;
+                Block lsurf = get_ground(lx, ly);
+                if (lsurf == Block::Water || lsurf == Block::Ice || lsurf == Block::Lava) continue;
+                set(lx, ly, kLootBlocks[j]);
+            }
+        }
+    }
+
+    // === Passo 7.5: rebordo decorativo das chamines vulcanicas pequenas (ver vent_centers,
+    // Passo 1.5) - so' pedras crua ao redor do pontinho de lava, a ~2 tiles (o proprio raio
+    // de lava, kVentLavaRadius=1.5, ja cobre os vizinhos ortogonais/diagonais imediatos) -
+    // da o "chamine" sem esculpir heightmap nenhum.
+    for (const auto& vc : vent_centers) {
+        int vx = vc.first, vy = vc.second;
+        static const int kRimOffsets[4][2] = {{2, 0}, {-2, 0}, {0, 2}, {0, -2}};
+        for (const auto& off : kRimOffsets) {
+            int rx = vx + off[0], ry = vy + off[1];
+            if (!in_bounds(rx, ry)) continue;
+            Block rsurf = get_ground(rx, ry);
+            if (rsurf == Block::Water || rsurf == Block::Ice || rsurf == Block::Lava) continue;
+            set(rx, ry, Block::Stone);
         }
     }
 
@@ -369,7 +843,7 @@ Block stack_top_block_at(const World& world, int tx, int tz) {
 }
 
 bool is_mineable(Block b) {
-    if (b == Block::Air || b == Block::Water) return false;
+    if (b == Block::Air || b == Block::Water || b == Block::Lava) return false;
     if (is_base_structure(b)) return false;
     return true;
 }

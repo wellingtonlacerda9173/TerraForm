@@ -69,6 +69,7 @@ struct Module {
     float t = 0.0f;
     float health = 100.0f;     // 0-100, se <= 0 fica Damaged
     ModuleStatus status = ModuleStatus::Active;
+    bool upgraded = false;     // 1 nivel de upgrade (tecla R) - ver try_upgrade_module()
 };
 
 // Idem g_construction_queue acima: main.cpp continua lendo/escrevendo g_modules
@@ -99,6 +100,23 @@ ModuleStats get_module_stats(Block b);
 // scope) also calls it.
 bool start_construction(Block module_type, int slot_index);
 
+// Upgrade de 1 nivel (tecla R, main.cpp) de um modulo ja construido em (tx,ty) - gasta
+// get_module_upgrade_cost(), marca Module::upgraded=true, dispara particulas. Retorna
+// false sem custar nada se nao houver modulo ali, ja estiver upgradado, ou faltar recurso.
+bool try_upgrade_module(int tx, int ty);
+
+// Refino de Liga (tecla G, main.cpp) numa Oficina (Block::Workshop) construida em (tx,ty) -
+// gasta get_refine_cost(), soma kRefineBatchSize de Block::RefinedAlloy ao inventario.
+// Cooldown fixo (nao gastavel em sequencia instantanea). Retorna false sem custar nada se
+// nao houver Workshop ali, estiver danificado, faltar recurso, ou ainda em cooldown.
+bool try_refine_at_workshop(int tx, int ty);
+
+// Fabricacao "de campo" da Pistola de Laser (tecla P, main.cpp, funciona em qualquer lugar,
+// sem exigir Oficina) - gasta get_weapon_cost(), seta g_inventory[Block::LaserPistol]=1
+// (posse, nao lote). Retorna false sem custar nada se faltar recurso ou o jogador ja
+// possuir uma.
+bool try_craft_laser_pistol();
+
 // NOTE: get_module_status(Block)/status_string(ModuleStatus) are NOT declared here on
 // purpose - grep across the whole file shows neither is ever called from outside this
 // module (both were already dead code before this refactor: defined but unused).  Since
@@ -118,3 +136,22 @@ std::string unlock_progress_string(Block b);
 void generate_base(World& world);
 void rebuild_modules_from_world();
 void update_modules(World& world, float dt);
+
+// Centro da cupula da base E' g_base_x/g_base_y (declarados em main.cpp) - nao existe um
+// par de coordenadas separado pra isso. Um par separado (g_shelter_door_x/y) existiu aqui
+// antes e foi removido: so era atribuido dentro de generate_base(), chamada apenas num
+// "Novo Jogo" de verdade - continuar/carregar uma save (save_load.cpp) nunca o tocava,
+// entao apos qualquer reinicio do processo + "Continuar", esses globais ficavam presos em
+// 0 (tile de origem do mundo) pelo resto da sessao, desconectados de onde a base
+// realmente estava - quebrando silenciosamente a barreira de colisao, o gatilho da porta
+// e ate o desenho da malha decorativa ao mesmo tempo (bug real, ja diagnosticado e
+// corrigido usando g_base_x/g_base_y direto em todo lugar).
+
+// Raio da barreira de colisao invisivel da cupula (cilindro em volta de g_base_x/y,
+// qualquer altura, 360 graus - ver apply_dome_barrier() em player_physics.cpp). Fica entre o
+// anel de slots (14, generate_base()) e a borda visivel da malha decorativa (16, main.cpp) -
+// a barreira nao usa blocos do mundo (evitava o contorno serrilhado de uma grade quadrada
+// tentando aproximar um circulo, rejeitado pelo usuario) nem tem excecao de angulo pra porta:
+// a porta e so um detalhe visual sempre "fechado" na malha (render_geodesic_dome), e a unica
+// forma de atravessar em qualquer ponto do circulo e o teleporte curto de proximidade.
+constexpr float kDomeWallRadius = 15.5f;

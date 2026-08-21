@@ -20,8 +20,16 @@ enum class ObjectiveId {
     BuildTerraformerBeacon,
     ReachHabitable,
     TerraformComplete,
+    // Trilho de "legado" pos-vitoria (indices 10-12) - o jogo nao tinha nada de verdade
+    // pra fazer depois de TerraformComplete antes disso. kMainObjectiveCount (abaixo)
+    // preserva o ponto de vitoria original pra quem ja depende dele (ui_hud.cpp,
+    // save_load.cpp, world.cpp) - so kObjectiveCount cresce.
+    BuildWorkshop,
+    UpgradeThreeModules,
+    BankRefinedAlloy,
 };
-constexpr int kObjectiveCount = 10;
+constexpr int kMainObjectiveCount = 10; // ponto de vitoria original (Terraformar Marte) - inalterado
+constexpr int kObjectiveCount = 13;      // inclui os 3 objetivos de legado pos-vitoria
 
 struct ObjectiveDef {
     const char* title;
@@ -46,6 +54,10 @@ void reset_objectives();
 // While > 0, a one-time victory celebration overlay should be shown; counts down
 // with dt inside update_objectives(). Replaces the old permanent g_victory overlay.
 float objectives_victory_celebration_remaining();
+
+// Trilho de legado (objetivos 10-12, pos-TerraformComplete) - mesmo padrao do par acima.
+bool objectives_legacy_complete();               // g_current >= kObjectiveCount (13)
+float objectives_legacy_celebration_remaining();
 
 // ---- Save/load support ----
 const bool* objectives_ever_built_snapshot();  // size kBlockTypeCount, read-only view for save_game

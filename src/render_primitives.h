@@ -1,6 +1,7 @@
 #pragma once
 
 #include "textures.h"    // Tile, UvRect, atlas_uv - used by the *_tex primitive signatures
+#include "math_core.h"   // Vec3 - used by render_geodesic_dome's signature
 
 // ============= Render Primitives (2D quads/bars/circles + 3D cubes/walls/sphere) =============
 // Extracted verbatim from main.cpp (original lines ~697-1033, plus the wall-texture cluster
@@ -23,8 +24,48 @@ void render_rounded_rect(float x, float y, float w, float h, float radius, float
 
 void render_cube_outline_3d(float x, float y, float z, float size, float line_width = 1.5f);
 void render_cube_3d(float x, float y, float z, float size, float r, float g, float b, float a = 1.0f, bool outline = false);
+// Segmento de linha 3D simples (RL_LINES) - substituido pelo render_beam_3d abaixo como
+// origem do traco do tiro da pistola de laser (linha de 1px nao tinha espessura/brilho
+// nenhum - feedback do jogador). Mantido pra quem mais usar (nenhum call site hoje).
+void render_line_3d(Vec3 a, Vec3 b, float r, float g, float b_col, float alpha = 1.0f);
+// Faixa (quad) esticada de `a` ate `b`, largura `width` - usada pro feixe da pistola de
+// laser (creatures.cpp), 2 chamadas por tiro (nucleo fino + brilho largo, RL_BLEND_ADDITIVE).
+// "Vertical" (perpendicular = normalize(cross(beam_dir, up)), fallback {1,0,0} se o feixe
+// for quase vertical) - NAO billboard-pra-camera: com a camera atras do jogador olhando
+// quase na mesma direcao do tiro (o caso mais comum), cross(beam_dir, to_camera) encolhe
+// pra perto de zero na maior parte do tempo, piscando. Uma faixa vertical fixa e' o padrao
+// certo pra tracos/lasers.
+void render_beam_3d(Vec3 a, Vec3 b, float width, float r, float g, float b_col, float alpha = 1.0f);
+// Disco brilhante billboard-pra-camera (aditivo, alpha cai pra 0 na borda) - usado pro
+// flash de disparo/impacto da pistola de laser (creatures.cpp, main.cpp). Duplica de
+// proposito a tecnica de render_billboard_disc (sky.cpp, static/nao exposto) em vez de
+// acoplar creatures.cpp/main.cpp aos internals do ceu - mesmo raciocinio de nao reusar
+// render_line_3d/render_plane_3d entre arquivos sem promove-los primeiro.
+void render_glow_disc_3d(Vec3 center, float radius, float r, float g, float b_col, float alpha, int segments = 20);
+// Plano horizontal simples (chao/agua/decais) - lido/escrito por main.cpp desde sempre;
+// perdeu o "static" que tinha la (creatures.cpp precisa dele agora pra marca de queimado da
+// pistola de laser - render_cube_3d le como "bloco flutuando", nao decal de chao).
+void render_plane_3d(float x, float y, float z, float size, float r, float g, float b, float a = 1.0f);
 // render_sphere_3d removed (raylib migration): confirmed dead code, zero call sites anywhere
 // in src/ - see the migration plan for details.
+
+// Cupula decorativa (saia cilindrica/fundacao + hemisferio geodesico por cima) - a malha em
+// si nao tem colisao (e so desenho, nao mexe em World/is_solid); a colisao de verdade e uma
+// barreira cilindrica invisivel calculada a parte em player_physics.cpp (kDomeWallRadius,
+// modules_building.h), com o MESMO raio/centro passados aqui. base_center e o centro no
+// chao; a fundacao sobe de y=0 a y=+skirt_height (cor metalica, mais fria que a casca tan),
+// e o hemisferio comeca dali e sobe mais +radius (mesma tecnica de faixas de latitude/
+// longitude de render_lit_sphere em sky.cpp, so sem luz solar - cor solida + gradiente de
+// altura, e um 2o passe em linhas pelas mesmas faixas pro padrao triangulado/geodesico).
+// door_facing_rad/door_half_angle/door_height (todos >0 pra ter porta - door_half_angle<=0
+// desenha tudo fechado, sem porta nenhuma) marcam um arco da fundacao (altura <= door_height,
+// deve ficar <= skirt_height pra a porta caber inteira na fundacao) que e desenhado com um
+// tom metalico distinto + moldura/costura/luzes (alcapao tipo espaconave, sempre fechado -
+// nao e um buraco na malha, e so uma textura/cor diferente no mesmo lugar solido).
+void render_geodesic_dome(Vec3 base_center, float radius, float r, float g, float b, float a,
+                           int lat_seg = 8, int lon_seg = 16,
+                           float door_facing_rad = 0.0f, float door_half_angle = 0.0f,
+                           float door_height = 0.0f, float skirt_height = 3.0f);
 
 // ============= Per-frame fog parameters (raylib migration) =============
 // Legacy OpenGL fixed-function fog (glFogf/glFogi/glFogfv, enabled for the whole terrain/

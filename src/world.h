@@ -6,6 +6,13 @@
 #include <cstdint>
 #include <vector>
 
+// Dimensoes do mundo gerado (tiles). Era duplicado como "static const int WORLD_WIDTH/
+// WORLD_HEIGHT" em main.cpp/win32_platform.cpp/ui_menu.cpp (3 copias identicas - risco real
+// de mudar so uma e deixar os fluxos de Novo Jogo/regenerar presos no tamanho antigo).
+// Consolidado aqui numa unica fonte, ja que world.h e incluido por todos os 3.
+static constexpr int kWorldWidth = 3072;
+static constexpr int kWorldHeight = 1536;
+
 // ============= World =============
 // Extracted verbatim from main.cpp (struct World, original lines ~161-505). The small
 // one-line accessors (in_bounds/get/set/get_ground/set_ground/height_at/set_height/

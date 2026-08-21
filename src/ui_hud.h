@@ -17,3 +17,13 @@
 // this in render_world() stay inline in main.cpp (a later ui_menu extraction stage
 // handles those).
 void render_hud(int win_w, int win_h);
+
+// Geometria do painel direito (Fase/terraformacao) - exposta pra outros arquivos (hoje so
+// minimap.cpp) poderem ancorar elementos em relacao a ele sem duplicar os mesmos numeros
+// magicos numa 2a copia independente. Bug real corrigido por causa disso: o minimapa
+// ancorava numa altura fixa (200px) que nao tinha ligacao nenhuma com a altura de verdade
+// deste painel (calculada aqui) - qualquer mudanca num dos dois lados descolava do outro,
+// e chegou a sobrepor. render_hud() usa essas mesmas funcoes internamente agora, entao os
+// dois nunca mais podem divergir.
+float hud_right_panel_right_x(int win_w);
+float hud_right_panel_bottom_y();

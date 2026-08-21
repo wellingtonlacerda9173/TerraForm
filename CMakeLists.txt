@@ -47,6 +47,8 @@ add_executable(terraformer WIN32
   src/input.cpp
   src/win32_platform.cpp
   src/objectives.cpp
+  src/creatures.cpp
+  src/audio.cpp
 )
 
 if(MSVC)

@@ -32,6 +32,7 @@ extern float g_temperature;
 extern float g_co2_level;
 extern float g_atmosphere;
 extern float g_terraform;
+extern float g_suit_integrity;
 extern bool g_victory;
 extern bool g_show_build_menu;
 extern bool g_surface_dirty;
@@ -68,7 +69,7 @@ bool save_game(const char* path) {
     if (!f) return false;
 
     const char magic[4] = {'T', 'F', '3', 'D'};  // Atualizado para 3D
-    uint32_t version = 8;  // Version 8 - adds stacked/built blocks per column
+    uint32_t version = 10;  // Version 10 - adds ice/crystal/metal/organic/components unlock totals
     uint32_t w = (uint32_t)g_world->w;
     uint32_t h = (uint32_t)g_world->h;
     uint32_t seed = (uint32_t)g_world->seed;
@@ -194,6 +195,28 @@ bool save_game(const char* path) {
         f.write((const char*)&sh, sizeof(sh));
         f.write((const char*)&g_world->stack_blocks[(size_t)col * (size_t)World::kMaxStackExtra], (std::streamsize)sh);
     }
+
+    // Version 9: integridade do traje + posicoes dos modulos aprimorados (tecla R).
+    f.write((const char*)&g_suit_integrity, sizeof(g_suit_integrity));
+    std::vector<std::pair<int32_t, int32_t>> upgraded_positions;
+    for (const Module& m : g_modules) {
+        if (m.upgraded) upgraded_positions.push_back({(int32_t)m.x, (int32_t)m.y});
+    }
+    uint32_t upgraded_count = (uint32_t)upgraded_positions.size();
+    f.write((const char*)&upgraded_count, sizeof(upgraded_count));
+    for (const auto& pos : upgraded_positions) {
+        f.write((const char*)&pos.first, sizeof(pos.first));
+        f.write((const char*)&pos.second, sizeof(pos.second));
+    }
+
+    // Version 10: novos totais de desbloqueio (gelo/cristal/metal/organico/componentes) -
+    // UnlockProgress e um blob de layout fixo (nao autodescritivo como g_inventory), entao
+    // saves antigos genuinamente nao tem esses bytes.
+    f.write((const char*)&g_unlocks.total_ice, sizeof(g_unlocks.total_ice));
+    f.write((const char*)&g_unlocks.total_crystal, sizeof(g_unlocks.total_crystal));
+    f.write((const char*)&g_unlocks.total_metal, sizeof(g_unlocks.total_metal));
+    f.write((const char*)&g_unlocks.total_organic, sizeof(g_unlocks.total_organic));
+    f.write((const char*)&g_unlocks.total_components, sizeof(g_unlocks.total_components));
 
     return (bool)f;
 }
@@ -409,6 +432,7 @@ bool load_game(const char* path) {
     g_surface_dirty = true;
     g_victory = false;
     g_show_build_menu = false;
+    g_suit_integrity = 100.0f; // default pra saves pre-v9; sobrescrito abaixo se version>=9
     rebuild_modules_from_world();
 
     // Version 6: Carregar fog of war e waypoints
@@ -528,6 +552,39 @@ bool load_game(const char* path) {
                 }
             }
         }
+    }
+
+    // Version 9: integridade do traje + modulos aprimorados (tecla R). rebuild_modules_
+    // from_world() (acima) ja recriou g_modules do zero com upgraded=false em todos - so
+    // marca de volta os que a save diz que estavam aprimorados.
+    if (version >= 9) {
+        float suit_integrity = 100.0f;
+        f.read((char*)&suit_integrity, sizeof(suit_integrity));
+        if (f) g_suit_integrity = std::clamp(suit_integrity, 0.0f, 100.0f);
+
+        uint32_t upgraded_count = 0;
+        f.read((char*)&upgraded_count, sizeof(upgraded_count));
+        if (f && upgraded_count <= (uint32_t)g_modules.size() + 16) {
+            for (uint32_t i = 0; i < upgraded_count; ++i) {
+                int32_t ux = 0, uy = 0;
+                f.read((char*)&ux, sizeof(ux));
+                f.read((char*)&uy, sizeof(uy));
+                if (!f) break;
+                for (Module& m : g_modules) {
+                    if (m.x == ux && m.y == uy) { m.upgraded = true; break; }
+                }
+            }
+        }
+    }
+
+    // Version 10: novos totais de desbloqueio. Saves antigos (<10) ficam em 0 (unlocks{}
+    // ja zera por default) - equivale a "nunca coletou ainda", mesmo fallback honesto da v7.
+    if (version >= 10) {
+        f.read((char*)&g_unlocks.total_ice, sizeof(g_unlocks.total_ice));
+        f.read((char*)&g_unlocks.total_crystal, sizeof(g_unlocks.total_crystal));
+        f.read((char*)&g_unlocks.total_metal, sizeof(g_unlocks.total_metal));
+        f.read((char*)&g_unlocks.total_organic, sizeof(g_unlocks.total_organic));
+        f.read((char*)&g_unlocks.total_components, sizeof(g_unlocks.total_components));
     }
 
     return true;

@@ -9,7 +9,8 @@
 #include "modules_building.h"    // Module, g_modules
 #include "game_state.h"          // set_toast
 #include "font.h"                // draw_text
-#include "render_primitives.h"   // render_quad (render_primitives extraction stage)
+#include "render_primitives.h"   // render_quad, render_circle (render_primitives extraction stage)
+#include "ui_hud.h"              // hud_right_panel_right_x/bottom_y (ancora o minimapa sem duplicar geometria)
 
 #include <algorithm>
 #include <cmath>
@@ -34,15 +35,25 @@ extern MapConfig g_map_cfg;
 // too, same pattern.
 extern MiniMapRuntime g_minimap;
 
-// kDayLength is a compile-time literal (not mutable state) defined in main.cpp, which
-// keeps its own copy too (this file's render/sky code still uses it directly there). Since
-// it's a literal, not state, this file keeps its own static constexpr copy rather than
-// sharing it via extern - same pattern as kDayLength in modules_building.cpp.
-static constexpr float kDayLength = 150.0f; // seconds
+// add_alert() fica definida em main.cpp (sistema de alertas, fora do escopo desta etapa) -
+// scan_for_points_of_interest() abaixo precisa dela, mesmo padrao de forward declaration ja
+// usado em modules_building.cpp.
+void add_alert(const std::string& msg, float r, float g, float b, float duration = 3.0f, float cooldown = 5.0f);
 
-// Atualizar fog of war baseado na posicao do jogador
-void update_fog_of_war() {
+// kDayLength agora vem de game_state.h (era uma copia local aqui).
+
+// Cooldown do scanner (tecla T, ver scan_for_points_of_interest() abaixo) - declarado aqui
+// (antes de update_fog_of_war) porque o decremento roda la, reaproveitando o unico ponto
+// de update incondicional 1x/frame que ja existia, em vez de criar outro.
+static float g_scan_cooldown = 0.0f;
+
+// Atualizar fog of war baseado na posicao do jogador. Recebe dt agora (nao recebia antes)
+// so pra decrementar o cooldown do scanner (g_scan_cooldown, abaixo) - reaproveita a unica
+// chamada incondicional 1x/frame ja existente em vez de criar outro ponto de update.
+void update_fog_of_war(float dt) {
     if (!g_world) return;
+
+    if (g_scan_cooldown > 0.0f) g_scan_cooldown = std::max(0.0f, g_scan_cooldown - dt);
 
     int px = (int)g_player.pos.x;
     int py = (int)g_player.pos.y;
@@ -69,6 +80,80 @@ void update_fog_of_war() {
     if (changed) {
         g_minimap.dirty_full = true;
     }
+}
+
+// Scanner (tecla T, main.cpp) - segue exatamente o precedente de upgrade/reparo/refino
+// (tecla + checagem, sem item de inventario novo). Varredura circular avulsa (nao por
+// frame, custo desprezivel) ao redor do jogador procurando, em ordem de prioridade: (1)
+// qualquer tile is_base_structure() fora de um raio de exclusao da propria base (senao o
+// scanner "acha" a propria pista/anel de slots/wreck do foguete) = um POI; (2) na falta de
+// POI, o Metal mais proximo (minerio mais raro do jogo - 2 limiares de ruido em AND,
+// world.cpp); (3) na falta de Metal, Copper (2o mais raro). Crystal fica de fora de
+// proposito - e gerado como campo continuo de bioma, ja facil de achar sozinho, nao um
+// veio esparso que precise de ajuda pra localizar. O que for encontrado vira um waypoint
+// (add_waypoint ja desenha no minimapa/mapa cheio de graca, zero renderizacao nova).
+bool scan_for_points_of_interest() {
+    if (!g_world) return false;
+    if (g_scan_cooldown > 0.0f) {
+        set_toast("Scanner recarregando...", 1.5f);
+        return false;
+    }
+
+    static constexpr int kScanRadius = 70;
+    // 2x kDomeWallRadius (~31) cobre a pista (raio 20), o anel de slots (raio 14) e o
+    // wreck do foguete (~25.5 do centro, modules_building.cpp) com folga.
+    static constexpr float kScanBaseExclusionRadius = 2.0f * kDomeWallRadius;
+    static constexpr float kScanCooldownSeconds = 35.0f;
+
+    g_scan_cooldown = kScanCooldownSeconds;
+
+    int px = (int)g_player.pos.x;
+    int py = (int)g_player.pos.y;
+    float base_excl2 = kScanBaseExclusionRadius * kScanBaseExclusionRadius;
+    float radius2 = (float)(kScanRadius * kScanRadius);
+
+    bool found_poi = false;    int poi_x = 0, poi_y = 0;       float poi_d2 = 0.0f;
+    bool found_metal = false;  int metal_x = 0, metal_y = 0;   float metal_d2 = 0.0f;
+    bool found_copper = false; int copper_x = 0, copper_y = 0; float copper_d2 = 0.0f;
+
+    for (int dy = -kScanRadius; dy <= kScanRadius; ++dy) {
+        for (int dx = -kScanRadius; dx <= kScanRadius; ++dx) {
+            float d2 = (float)(dx * dx + dy * dy);
+            if (d2 > radius2) continue;
+            int x = px + dx, y = py + dy;
+            if (!g_world->in_bounds(x, y)) continue;
+            Block b = g_world->get(x, y);
+
+            if (is_base_structure(b)) {
+                float bx = (float)(x - g_base_x), by = (float)(y - g_base_y);
+                if (bx * bx + by * by > base_excl2 && (!found_poi || d2 < poi_d2)) {
+                    found_poi = true; poi_x = x; poi_y = y; poi_d2 = d2;
+                }
+            } else if (b == Block::Metal) {
+                if (!found_metal || d2 < metal_d2) { found_metal = true; metal_x = x; metal_y = y; metal_d2 = d2; }
+            } else if (b == Block::Copper) {
+                if (!found_copper || d2 < copper_d2) { found_copper = true; copper_x = x; copper_y = y; copper_d2 = d2; }
+            }
+        }
+    }
+
+    if (found_poi) {
+        add_waypoint(poi_x, poi_y, "Sinal detectado");
+        add_alert("Scanner: sinal de estrutura detectado!", 0.3f, 1.0f, 0.5f);
+        return true;
+    }
+    if (found_metal) {
+        add_waypoint(metal_x, metal_y, "Veio de metal");
+        add_alert("Scanner: veio de metal detectado!", 0.3f, 1.0f, 0.5f);
+        return true;
+    }
+    if (found_copper) {
+        add_waypoint(copper_x, copper_y, "Veio de cobre");
+        add_alert("Scanner: veio de cobre detectado!", 0.3f, 1.0f, 0.5f);
+        return true;
+    }
+    set_toast("Nada de interessante por perto.", 2.0f);
+    return false;
 }
 
 // Adicionar waypoint na posicao especificada
@@ -216,12 +301,23 @@ void render_minimap(int win_w, int win_h) {
     if (!g_world) return;
 
     float map_size = g_map_cfg.minimap_size;
-    float map_x = (float)win_w - map_size - 15.0f;
-    float map_y = 200.0f;  // Abaixo do painel de terraformacao
+    // Ancorado nas mesmas 2 funcoes que ui_hud.cpp usa pra desenhar o painel de Fase/
+    // terraformacao (ver comentario completo em ui_hud.h) - antes o minimapa usava um "y"
+    // fixo (200px) sem nenhuma ligacao com a altura de verdade daquele painel (calculada
+    // separadamente em render_hud()), entao os dois podiam (e chegaram a) se sobrepor.
+    // Tambem alinha a borda direita dos dois, que antes tinham anchors/larguras diferentes.
+    float map_x = hud_right_panel_right_x(win_w) - 3.0f - map_size;
+    float map_y = hud_right_panel_bottom_y() + 12.0f;
+    float map_radius = map_size * 0.5f;
+    float map_cx = map_x + map_radius;
+    float map_cy = map_y + map_radius;
 
-    // Fundo do minimapa (borda)
-    render_quad(map_x - 3.0f, map_y - 3.0f, map_size + 6.0f, map_size + 6.0f, 0.1f, 0.1f, 0.15f, 0.95f);
-    render_quad(map_x - 1.0f, map_y - 1.0f, map_size + 2.0f, map_size + 2.0f, 0.2f, 0.25f, 0.3f, 0.9f);
+    // Fundo do minimapa (borda) - circular de verdade agora (era um quadrado, sem nenhum
+    // recorte - o "formato estranho" reportado era o contorno arredondado do fog-of-war
+    // (revelado em circulo) contra os cantos quadrados do minimapa, nao um bug de
+    // clipping). 2 circulos concentricos (fundo escuro + anel de borda), mesmo raio geral.
+    render_circle(map_cx, map_cy, map_radius + 3.0f, 0.1f, 0.1f, 0.15f, 0.95f, 32);
+    render_circle(map_cx, map_cy, map_radius + 1.0f, 0.2f, 0.25f, 0.3f, 0.9f, 32);
 
     // Calcular viewport do mapa (tiles visiveis)
     int view_tiles = (int)(g_map_cfg.minimap_zoom * 64.0f);
@@ -234,6 +330,7 @@ void render_minimap(int win_w, int win_h) {
     float tile_px = map_size / (float)view_tiles;
 
     // Renderizar tiles do minimapa
+    float map_radius2 = map_radius * map_radius;
     for (int ty = 0; ty < view_tiles; ++ty) {
         for (int tx = 0; tx < view_tiles; ++tx) {
             int wx = start_x + tx;
@@ -241,6 +338,13 @@ void render_minimap(int win_w, int win_h) {
 
             float px = map_x + (float)tx * tile_px;
             float py = map_y + (float)ty * tile_px;
+
+            // Recorte circular: pula tiles cujo centro caia fora do circulo do minimapa
+            // (antes desenhava o quadrado inteiro - os 4 cantos ficavam pra fora da borda
+            // circular de fundo, um dos motivos do visual "estranho" reportado).
+            float cdx = (px + tile_px * 0.5f) - map_cx;
+            float cdy = (py + tile_px * 0.5f) - map_cy;
+            if (cdx * cdx + cdy * cdy > map_radius2) continue;
 
             // Fora dos limites do mundo
             if (!g_world->in_bounds(wx, wy)) {
@@ -313,6 +417,11 @@ void render_minimap(int win_w, int win_h) {
             float base_px = map_x + ((float)base_rel_x + 0.5f) * tile_px;
             float base_py = map_y + ((float)base_rel_y + 0.5f) * tile_px;
 
+            // Nao desenha se cair fora do circulo (mesmo recorte da grade de tiles acima) -
+            // senao o icone "vaza" pra fora da borda circular nos cantos.
+            float bdx = base_px - map_cx, bdy = base_py - map_cy;
+            if (bdx * bdx + bdy * bdy <= map_radius2) {
+
             // Icone de casa/base
             float house_size = 5.0f;
 
@@ -326,6 +435,7 @@ void render_minimap(int win_w, int win_h) {
 
             // Base (quadrado)
             render_quad(base_px - house_size * 0.7f, base_py, house_size * 1.4f, house_size, 0.3f, 0.6f, 0.9f, 1.0f);
+            }
         }
     }
 
@@ -337,6 +447,10 @@ void render_minimap(int win_w, int win_h) {
         if (wp_rel_x >= 0 && wp_rel_x < view_tiles && wp_rel_y >= 0 && wp_rel_y < view_tiles) {
             float wp_px = map_x + ((float)wp_rel_x + 0.5f) * tile_px;
             float wp_py = map_y + ((float)wp_rel_y + 0.5f) * tile_px;
+
+            // Mesmo recorte circular - pula se cair fora da borda.
+            float wdx = wp_px - map_cx, wdy = wp_py - map_cy;
+            if (wdx * wdx + wdy * wdy > map_radius2) continue;
 
             // Marcador de waypoint (losango)
             float wp_size = 3.0f;

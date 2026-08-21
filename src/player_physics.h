@@ -49,12 +49,21 @@ struct Player {
     float anim_frame = 0.0f; // General animation counter
     bool is_mining = false;
     float mine_anim = 0.0f;
-    bool is_moving = false;  // Se esta andando
-    
+    bool is_moving = false;  // Se esta andando (baseado na velocidade - inclui deslizar)
+    // Suavizado 0..1: 1 = andando de verdade (input ativo), 0 = parado ou so' deslizando
+    // por inercia (ex.: gelo, soltou o movimento mas o corpo ainda tem velocidade residual).
+    // Usado pra escalar o ciclo de passada (bob/peso/balanco de perna) - sem isso as pernas
+    // continuavam fazendo o gesto de andar mesmo com o jogador parado, so' escorregando.
+    float walk_blend = 0.0f;
+
     // === JETPACK ===
     bool jetpack_active = false;  // Jetpack esta ativo
     float jetpack_fuel = 100.0f;  // Combustivel do jetpack (0-100)
     float jetpack_flame_anim = 0.0f; // Animacao da chama
+    // Rajada de pouso (ver apply_single_physics_step) - true enquanto segurando a
+    // velocidade segura ate o pouso de fato. main.cpp usa isso pra desenhar a chama MAIOR
+    // que o voo manual normal nesse momento (deixa visivel que esta freando de verdade).
+    bool landing_assist_active = false;
     
     // Movimento suave
     float speed_mult = 1.0f;  // Multiplicador de velocidade (acelera gradualmente)
@@ -102,11 +111,26 @@ struct PhysicsRuntime {
     bool sliding = false;
     TerrainPhysicsType terrain = TerrainPhysicsType::Normal;
     std::string terrain_name = "Normal";
+    bool submerged = false; // Cabeca abaixo da superficie da agua (dreno extra de O2 do traje)
     Vec3 ground_normal = {0.0f, 1.0f, 0.0f};
     Vec2 collision_normal = {0.0f, 0.0f};
 
     std::array<PhysicsRayDebug, 8> debug_rays = {};
     int debug_ray_count = 0;
+
+    // Evento de poeira da rajada de pouso (ver apply_single_physics_step,
+    // player_physics.cpp) - >0 = poeira ativa, contagem regressiva. main.cpp desenha um
+    // anel de "puffs" procedural (mesmo estilo do fogo do jetpack, ja que o sistema
+    // generico de particulas de items_particles.cpp nunca e desenhado) enquanto > 0, e
+    // decrementa por frame.
+    float landing_dust_timer = 0.0f;
+    Vec3 landing_dust_pos = {0.0f, 0.0f, 0.0f};
+    // 0..1 - o quao forte era a queda no instante da rajada (velocidade de impacto
+    // relativa a faixa entre "mal disparou a assistencia" e "velocidade terminal") - ver
+    // apply_single_physics_step. main.cpp escala o tamanho/raio/alpha do efeito por isso,
+    // pra uma queda de pouca altura dar so um respingo pequeno e uma queda de verdade dar
+    // uma onda bem maior.
+    float landing_dust_intensity = 1.0f;
 };
 
 struct PlayerPhysicsInput {
@@ -116,6 +140,7 @@ struct PlayerPhysicsInput {
     bool jump_pressed = false;
     bool jump_held = false;
     bool jump_released = false;
+    bool descend_held = false; // Nadar pra baixo/mergulhar (so tem efeito dentro d'agua)
 };
 
 // O unico PhysicsRuntime do jogo. Definido (nao-static) em player_physics.cpp; main.cpp
@@ -137,6 +162,20 @@ void spawn_player_at_base();
 void respawn_player_at_base(const char* death_reason);
 void spawn_player_new_game(World& world);
 
+// Teleporte generico pra coordenadas arbitrarias (usado pra cruzar a porta solida da cupula
+// da base, centrada em g_base_x/g_base_y - ver modules_building.h - um pulo curto de fora
+// pra dentro da parede e vice-versa) - mesmo padrao de spawn_player_at_base(). Atualiza
+// sozinho o lado logico da barreira da cupula (set_dome_barrier_side, abaixo) com base na
+// distancia do destino ate o centro da cupula - quem chama nao precisa saber desse detalhe.
+void teleport_player_to(int x, int y);
+
+// Lado logico da barreira cilindrica invisivel da cupula (ver apply_dome_barrier em
+// player_physics.cpp): true = jogador devia estar DENTRO do raio (kDomeWallRadius), false =
+// devia estar fora. Reforcado todo frame independente de ter "pego o exato instante" da
+// travessia - so muda quando spawn_player_at_base()/teleport_player_to() (acima) mudam a
+// posicao do jogador de proposito.
+void set_dome_barrier_side(bool inside);
+
 // Definidas em player_physics.cpp (leem g_physics.render_pos/render_pos_y); camera.cpp
 // (e o resto de main.cpp) continuam chamando-as atraves desta declaracao. camera.h ja
 // forward-declara as duas de forma identica (nao gera conflito - duplicated non-
@@ -144,3 +183,9 @@ void spawn_player_new_game(World& world);
 // tambem, ja que este e o modulo dono da definicao agora.
 Vec2 get_player_render_pos();
 float get_player_render_y();
+
+// Posicao (mundo) da ponta do cano da Pistola de Laser quando equipada - replica com
+// fidelidade total o offset de mao/bob/natacao usado por main.cpp pra desenhar a arma na
+// mao. Usada por creatures.cpp (origem visual do traco/flash do tiro) e por main.cpp
+// (fonte unica, evita duplicar a formula no bloco de desenho da arma).
+Vec3 get_weapon_muzzle_pos();

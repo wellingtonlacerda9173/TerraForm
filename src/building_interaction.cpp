@@ -16,6 +16,7 @@
 #include "render_primitives.h"
 #include "font.h"
 #include "objectives.h"         // notify_module_built
+#include "creatures.h"          // try_fire_laser_pistol
 
 #include <algorithm>
 #include <cmath>
@@ -104,11 +105,9 @@ static constexpr float kBaseIntegrityMax = 100.0f;
 static bool placeable_tile(Block b) {
     if (is_base_structure(b)) return false;
     if (is_module(b)) return false;
-    // Agua aberta agora e nadavel (ver TerrainPhysicsType::Water) - sem fundacao solida ali,
-    // nao da pra colocar nem empilhar bloco flutuando na coluna. Colocar diretamente em uma
-    // pilha ja existente sobre agua continua liberado (checado a parte, ver top_stackable).
-    if (b == Block::Water) return false;
-    if (b == Block::Air) return true;
+    // Colocar um bloco solido na agua desloca/preenche ela (estilo Minecraft) - a coluna vira
+    // o bloco colocado, sem "fundacao flutuante" porque nao ha mais agua ali depois.
+    if (b == Block::Air || b == Block::Water) return true;
     return !is_solid(b); // walkable pode ser substituido
 }
 
@@ -198,8 +197,7 @@ static bool g_place_is_stack = false;
 static bool placeable_tile_for_place(Block b) {
     if (is_base_structure(b)) return false;
     if (is_module(b)) return false;
-    if (b == Block::Water) return false; // agua aberta e nadavel, sem fundacao pra colocar
-    if (b == Block::Air) return true;
+    if (b == Block::Air || b == Block::Water) return true;
     return !is_solid(b); // chao/walkable pode ser substituido
 }
 
@@ -555,6 +553,14 @@ void update_mining_and_placement(float dt) {
     Vec3 ray_d = get_mouse_ray_direction(cursor.x, cursor.y, win_w, win_h);
     float ray_max = std::clamp(g_camera.effective_distance + kReach + 3.0f, 8.0f, 55.0f);
 
+    // Pistola de Laser equipada: dispara em vez de minerar/construir - intercepta ANTES de
+    // qualquer alvo/g_has_target ser calculado (nao faz sentido mirar um bloco com a arma na
+    // mao; g_has_target fica false esse frame, o que ja e' o comportamento certo pro HUD/R-F-G).
+    if (g_selected == Block::LaserPistol) {
+        try_fire_laser_pistol(ray_o, ray_d, dt);
+        return;
+    }
+
     // Primeiro: tentar mirar um drop (para facilitar coleta visual)
     {
         float best_t = std::numeric_limits<float>::infinity();
@@ -624,8 +630,7 @@ void update_mining_and_placement(float dt) {
 
         // Alvo de colocacao: tile atual se substituivel, ou empilhar em cima dele se ja
         // solido mas com espaco na pilha, ou o ultimo substituivel antes do hit.
-        bool top_stackable = !placeable_tile(top_b) && top_b != Block::Water
-            && g_world->stack_height_at(tx, tz) < World::kMaxStackExtra;
+        bool top_stackable = !placeable_tile(top_b) && g_world->stack_height_at(tx, tz) < World::kMaxStackExtra;
         if (placeable_tile(top_b)) {
             g_place_x = tx;
             g_place_y = tz;
@@ -862,7 +867,7 @@ void update_mining_and_placement(float dt) {
                 g_surface_dirty = true;
 
                 if (is_module(b)) {
-                    refund_cost(module_cost(b));
+                    refund_cost(get_module_cost(b));
                     g_modules.erase(std::remove_if(g_modules.begin(), g_modules.end(),
                         [](const Module& m) { return m.x == g_target_x && m.y == g_target_y; }), g_modules.end());
                 } else {
@@ -914,9 +919,16 @@ void update_mining_and_placement(float dt) {
                     if (!is_unlocked(g_selected)) {
                         set_toast("Modulo nao desbloqueado! Colete mais recursos.");
                     } else {
-                        CraftCost cost = module_cost(g_selected);
+                        // Antes usava module_cost() (custos ~10x mais baratos que o menu de
+                        // construcao, ex. Painel Solar ferro 3/pedra 2 vs o real 30/10) - um
+                        // exploit real, ja que colocar direto pelo hotbar saia muito mais
+                        // barato que usar o menu. Agora cobra o mesmo preco real dos dois
+                        // jeitos; so continua sem fila/tempo de construcao (conveniencia, nao
+                        // o bug).
+                        CraftCost cost = get_module_cost(g_selected);
                         if (can_afford(cost)) {
                             spend_cost(cost);
+                            if (cur == Block::Water) g_world->set_ground(g_place_x, g_place_y, Block::Dirt);
                             g_world->set(g_place_x, g_place_y, g_selected);
                             g_modules.push_back(Module{g_place_x, g_place_y, g_selected, 0.0f});
                             notify_module_built(g_selected);
@@ -935,6 +947,11 @@ void update_mining_and_placement(float dt) {
                     }
                 } else if (g_inventory[(int)g_selected] > 0) {
                     g_inventory[(int)g_selected]--;
+                    // Preencher agua com um bloco solido tem que atualizar o "chao" por baixo
+                    // tambem (nao so o objeto) - senao surface_block_at/stack_top_block_at
+                    // continuam enxergando Agua ali (ground array nunca mudou) e o jogador
+                    // ficaria "nadando" em cima de um bloco solido que acabou de preencher o lago.
+                    if (cur == Block::Water) g_world->set_ground(g_place_x, g_place_y, Block::Dirt);
                     g_world->set(g_place_x, g_place_y, g_selected);
                     g_surface_dirty = true;
                     g_place_cd = 0.12f;

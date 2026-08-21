@@ -8,6 +8,67 @@
 
 #include <cmath>
 
+void render_line_3d(Vec3 a, Vec3 b, float r, float g, float b_col, float alpha) {
+    rlBegin(RL_LINES);
+    rlColor4f(r, g, b_col, alpha);
+    rlVertex3f(a.x, a.y, a.z);
+    rlVertex3f(b.x, b.y, b.z);
+    rlEnd();
+}
+
+void render_beam_3d(Vec3 a, Vec3 b, float width, float r, float g, float b_col, float alpha) {
+    Vec3 dir = vec3_sub(b, a);
+    float len = vec3_length(dir);
+    if (len < 0.001f) return;
+    dir = vec3_scale(dir, 1.0f / len);
+    Vec3 up = {0.0f, 1.0f, 0.0f};
+    Vec3 right = vec3_cross(dir, up);
+    if (vec3_length(right) < 0.001f) right = {1.0f, 0.0f, 0.0f};
+    right = vec3_normalize(right);
+    Vec3 off = vec3_scale(right, width * 0.5f);
+
+    Vec3 a0 = vec3_sub(a, off), a1 = vec3_add(a, off);
+    Vec3 b0 = vec3_sub(b, off), b1 = vec3_add(b, off);
+    rlColor4f(r, g, b_col, alpha);
+    rlBegin(RL_QUADS);
+    rlVertex3f(a0.x, a0.y, a0.z);
+    rlVertex3f(a1.x, a1.y, a1.z);
+    rlVertex3f(b1.x, b1.y, b1.z);
+    rlVertex3f(b0.x, b0.y, b0.z);
+    rlEnd();
+}
+
+void render_glow_disc_3d(Vec3 center, float radius, float r, float g, float b_col, float alpha, int segments) {
+    Vec3 to_cam = vec3_sub(g_camera.position, center);
+    if (vec3_length(to_cam) < 0.001f) to_cam = {0.0f, 0.0f, 1.0f};
+    to_cam = vec3_normalize(to_cam);
+    Vec3 up = {0.0f, 1.0f, 0.0f};
+    Vec3 right = vec3_cross(up, to_cam);
+    if (vec3_length(right) < 0.001f) right = {1.0f, 0.0f, 0.0f};
+    right = vec3_normalize(right);
+    Vec3 disc_up = vec3_normalize(vec3_cross(to_cam, right));
+
+    rlBegin(RL_TRIANGLES);
+    float prev_x = 0.0f, prev_y = 0.0f, prev_z = 0.0f;
+    bool have_prev = false;
+    for (int i = 0; i <= segments; ++i) {
+        float ang = (float)i / (float)segments * 2.0f * kPi;
+        float ca = std::cos(ang), sa = std::sin(ang);
+        Vec3 rim = vec3_add(center, vec3_add(vec3_scale(right, ca * radius), vec3_scale(disc_up, sa * radius)));
+        if (have_prev) {
+            rlColor4f(r, g, b_col, alpha);
+            rlVertex3f(center.x, center.y, center.z);
+            rlColor4f(r, g, b_col, 0.0f);
+            rlVertex3f(prev_x, prev_y, prev_z);
+            rlColor4f(r, g, b_col, 0.0f);
+            rlVertex3f(rim.x, rim.y, rim.z);
+        }
+        prev_x = rim.x; prev_y = rim.y; prev_z = rim.z;
+        have_prev = true;
+    }
+    rlEnd();
+}
+
 // ============= Per-frame fog parameters =============
 // Definition of the extern declared in render_primitives.h. main.cpp's render_world() sets
 // these once per frame before the terrain loop runs (and clears .enabled once the fogged
@@ -30,6 +91,18 @@ static void apply_frame_fog(float wx, float wy, float wz, float& r, float& g, fl
     r = lerp(g_frame_fog.r, r, factor);
     g = lerp(g_frame_fog.g, g, factor);
     b = lerp(g_frame_fog.b, b, factor);
+}
+
+void render_plane_3d(float x, float y, float z, float size, float r, float g, float b, float a) {
+    float half = size * 0.5f;
+    apply_frame_fog(x, y, z, r, g, b);
+    rlColor4f(r, g, b, a);
+    rlBegin(RL_QUADS);
+    rlVertex3f(x - half, y, z - half);
+    rlVertex3f(x + half, y, z - half);
+    rlVertex3f(x + half, y, z + half);
+    rlVertex3f(x - half, y, z + half);
+    rlEnd();
 }
 
 static inline Color color_f(float r, float g, float b, float a) {
@@ -179,6 +252,216 @@ void render_cube_3d(float x, float y, float z, float size, float r, float g, flo
 
 // render_sphere_3d removed (raylib migration): confirmed dead code before removal (zero call
 // sites anywhere in src/, only a stale comment referenced it).
+
+// Hemisferio decorativo (domo geodesico) - ver comentario completo em render_primitives.h.
+// Malha em faixas de latitude/longitude (mesma estrutura de render_lit_sphere em sky.cpp,
+// usado pro planeta do ceu), so que so a metade de cima (0..pi/2, nao 0..pi) e sem luz
+// direcional/especular - cor solida com um leve gradiente de altura (mais claro perto do
+// topo) pra dar volume. Um segundo passe em RL_LINES pelas mesmas linhas de malha desenha
+// o padrao triangulado/geodesico por cima, sem precisar de geometria icosaedrica de
+// verdade. Sem colisao - e so uma chamada de desenho, nao mexe em World/is_solid.
+// Angulo minimo entre duas direcoes (-pi..pi) - usado pra saber se uma longitude cai
+// dentro do arco da porta, considerando o wraparound em 2*pi.
+static float shortest_angle_diff(float a, float b) {
+    float d = std::fmod(a - b + kPi, 2.0f * kPi);
+    if (d < 0.0f) d += 2.0f * kPi;
+    return d - kPi;
+}
+
+void render_geodesic_dome(Vec3 base_center, float radius, float r, float g, float b, float a,
+                           int lat_seg, int lon_seg,
+                           float door_facing_rad, float door_half_angle, float door_height,
+                           float skirt_height) {
+    rlSetTexture(0);
+    bool has_door = door_half_angle > 0.0f && door_height > 0.0f;
+    // y_world aqui e sempre altura ABSOLUTA a partir do chao (base_center.y), nao relativa
+    // ao hemisferio - a saia (abaixo) fica entre 0 e skirt_height, e o hemisferio comeca em
+    // skirt_height; com door_height <= skirt_height (ver chamada em main.cpp) a porta fica
+    // inteira dentro da saia, entao o hemisferio nunca precisa recortar nada de verdade -
+    // a checagem continua aqui so por seguranca/generalidade.
+    auto in_door = [&](float u, float y_world) -> bool {
+        if (!has_door) return false;
+        if (y_world > door_height) return false;
+        return std::fabs(shortest_angle_diff(u, door_facing_rad)) <= door_half_angle;
+    };
+
+    // --- Saia cilindrica (fundacao) ---
+    // Fecha o vao entre o chao e a casca do hemisferio (antes a malha comecava direto no
+    // chao, então em terreno levemente irregular sobrava uma fresta visivel por baixo) e da
+    // uma base solida onde a porta "encaixa" de verdade. Tom levemente mais frio/metalico
+    // que a casca tan de cima (fundacao vs tecido, como num domo real). A porta (arco em
+    // torno de door_facing_rad) NAO e um buraco aqui - e renderizada com um tom metalico
+    // distinto (fechada, solida) em vez de pulada, dando o efeito de alcapao sempre fechado
+    // sem nenhuma abertura visivel.
+    if (skirt_height > 0.0f) {
+        float found_r = r * 0.55f + 0.16f, found_g = g * 0.55f + 0.18f, found_b = b * 0.55f + 0.22f;
+        float door_r = 0.30f, door_g = 0.32f, door_b = 0.36f;
+
+        rlBegin(RL_QUADS);
+        for (int lon = 0; lon < lon_seg; ++lon) {
+            float u0 = (float)lon / (float)lon_seg * 2.0f * kPi;
+            float u1 = (float)(lon + 1) / (float)lon_seg * 2.0f * kPi;
+            float cu0 = std::cos(u0), su0 = std::sin(u0);
+            float cu1 = std::cos(u1), su1 = std::sin(u1);
+            Vec3 v_b0{base_center.x + cu0 * radius, base_center.y, base_center.z + su0 * radius};
+            Vec3 v_b1{base_center.x + cu1 * radius, base_center.y, base_center.z + su1 * radius};
+            Vec3 v_t0{base_center.x + cu0 * radius, base_center.y + skirt_height, base_center.z + su0 * radius};
+            Vec3 v_t1{base_center.x + cu1 * radius, base_center.y + skirt_height, base_center.z + su1 * radius};
+
+            // OR (nao AND) nos 2 extremos + ponto medio: com o vao da porta so um pouco mais
+            // largo que 1 segmento de longitude e centrado bem em cima de uma fronteira entre
+            // segmentos, NENHUM segmento tinha os 2 extremos dentro do arco ao mesmo tempo -
+            // a porta nunca ficava colorida diferente (bug real: "nao acho a porta" reportado).
+            // Checar qualquer sobreposicao (comeco, meio ou fim do segmento) garante que pelo
+            // menos os segmentos que tocam o arco da porta pegam a cor metalica distinta.
+            float um = (u0 + u1) * 0.5f;
+            bool seg_is_door = in_door(u0, 0.0f) || in_door(u1, 0.0f) || in_door(um, 0.0f);
+            float sr = seg_is_door ? door_r : found_r;
+            float sg = seg_is_door ? door_g : found_g;
+            float sb = seg_is_door ? door_b : found_b;
+
+            rlColor4f(sr * 0.55f, sg * 0.55f, sb * 0.55f, a);
+            rlVertex3f(v_b0.x, v_b0.y, v_b0.z);
+            rlVertex3f(v_b1.x, v_b1.y, v_b1.z);
+            rlColor4f(sr * 0.85f, sg * 0.85f, sb * 0.85f, a);
+            rlVertex3f(v_t1.x, v_t1.y, v_t1.z);
+            rlVertex3f(v_t0.x, v_t0.y, v_t0.z);
+        }
+        rlEnd();
+
+        // Linha de fundacao no chao (reforca a leitura de "estrutura construida").
+        rlBegin(RL_LINES);
+        rlColor4f(0.04f, 0.04f, 0.04f, a * 0.6f);
+        for (int lon = 0; lon < lon_seg; ++lon) {
+            float u0 = (float)lon / (float)lon_seg * 2.0f * kPi;
+            float u1 = (float)(lon + 1) / (float)lon_seg * 2.0f * kPi;
+            rlVertex3f(base_center.x + std::cos(u0) * radius, base_center.y, base_center.z + std::sin(u0) * radius);
+            rlVertex3f(base_center.x + std::cos(u1) * radius, base_center.y, base_center.z + std::sin(u1) * radius);
+        }
+        rlEnd();
+
+        // Detalhe da porta (moldura + costura central + 2 luzes de status) - so desenhado se
+        // houver porta; da o "tipo espaçonave" pedido sem precisar de textura nova.
+        if (has_door) {
+            float hy0 = base_center.y, hy1 = base_center.y + door_height;
+            float um = door_facing_rad;
+            float cum = std::cos(um), sum = std::sin(um);
+            float ul = door_facing_rad - door_half_angle, ur = door_facing_rad + door_half_angle;
+
+            rlBegin(RL_LINES);
+            rlColor4f(0.02f, 0.02f, 0.03f, a * 0.85f);
+            // Moldura: 2 verticais (bordas esquerda/direita) + 1 horizontal (topo)
+            rlVertex3f(base_center.x + std::cos(ul) * radius, hy0, base_center.z + std::sin(ul) * radius);
+            rlVertex3f(base_center.x + std::cos(ul) * radius, hy1, base_center.z + std::sin(ul) * radius);
+            rlVertex3f(base_center.x + std::cos(ur) * radius, hy0, base_center.z + std::sin(ur) * radius);
+            rlVertex3f(base_center.x + std::cos(ur) * radius, hy1, base_center.z + std::sin(ur) * radius);
+            for (int i = 0; i < 6; ++i) {
+                float a0 = ul + (ur - ul) * (float)i / 6.0f;
+                float a1 = ul + (ur - ul) * (float)(i + 1) / 6.0f;
+                rlVertex3f(base_center.x + std::cos(a0) * radius, hy1, base_center.z + std::sin(a0) * radius);
+                rlVertex3f(base_center.x + std::cos(a1) * radius, hy1, base_center.z + std::sin(a1) * radius);
+            }
+            // Costura central (porta dupla, estilo alcapao)
+            rlVertex3f(base_center.x + cum * radius, hy0, base_center.z + sum * radius);
+            rlVertex3f(base_center.x + cum * radius, hy1, base_center.z + sum * radius);
+            rlEnd();
+
+            // 2 luzes de status (pequenos quadrados ambar) perto do topo da porta.
+            float light_y = hy0 + door_height * 0.82f;
+            float lo = door_half_angle * 0.55f;
+            for (float sgn : {-1.0f, 1.0f}) {
+                float au = door_facing_rad + sgn * lo;
+                float lx = base_center.x + std::cos(au) * (radius + 0.02f);
+                float lz = base_center.z + std::sin(au) * (radius + 0.02f);
+                render_cube_3d(lx, light_y, lz, 0.14f, 0.95f, 0.70f, 0.20f, a);
+            }
+        }
+    }
+
+    Vec3 dome_center = base_center;
+    dome_center.y += skirt_height;
+
+    // --- Casca solida (hemisferio) ---
+    for (int lat = 0; lat < lat_seg; ++lat) {
+        float v0 = (float)lat / (float)lat_seg;
+        float v1 = (float)(lat + 1) / (float)lat_seg;
+        float p0 = v0 * (kPi * 0.5f);
+        float p1 = v1 * (kPi * 0.5f);
+        float y0 = std::sin(p0), y1 = std::sin(p1);
+        float rad0 = std::cos(p0), rad1 = std::cos(p1);
+
+        rlBegin(RL_QUADS);
+        Vec3 prev_top{}, prev_bot{};
+        float prev_top_shade = 0.0f, prev_bot_shade = 0.0f;
+        float prev_u = 0.0f;
+        bool have_prev = false;
+        for (int lon = 0; lon <= lon_seg; ++lon) {
+            float u = (float)lon / (float)lon_seg * 2.0f * kPi;
+            float cu = std::cos(u), su = std::sin(u);
+
+            Vec3 cur_top{dome_center.x + cu * rad1 * radius, dome_center.y + y1 * radius, dome_center.z + su * rad1 * radius};
+            Vec3 cur_bot{dome_center.x + cu * rad0 * radius, dome_center.y + y0 * radius, dome_center.z + su * rad0 * radius};
+            float top_shade = 0.72f + 0.28f * y1;
+            float bot_shade = 0.72f + 0.28f * y0;
+
+            bool skip_quad = in_door(u, skirt_height + y1 * radius) || in_door(prev_u, skirt_height + y1 * radius);
+            if (have_prev && !skip_quad) {
+                rlColor4f(r * prev_top_shade, g * prev_top_shade, b * prev_top_shade, a);
+                rlVertex3f(prev_top.x, prev_top.y, prev_top.z);
+                rlColor4f(r * prev_bot_shade, g * prev_bot_shade, b * prev_bot_shade, a);
+                rlVertex3f(prev_bot.x, prev_bot.y, prev_bot.z);
+                rlColor4f(r * bot_shade, g * bot_shade, b * bot_shade, a);
+                rlVertex3f(cur_bot.x, cur_bot.y, cur_bot.z);
+                rlColor4f(r * top_shade, g * top_shade, b * top_shade, a);
+                rlVertex3f(cur_top.x, cur_top.y, cur_top.z);
+            }
+            prev_top = cur_top; prev_bot = cur_bot;
+            prev_top_shade = top_shade; prev_bot_shade = bot_shade;
+            prev_u = u;
+            have_prev = true;
+        }
+        rlEnd();
+    }
+
+    // --- Linhas de latitude (paralelos) ---
+    for (int lat = 0; lat <= lat_seg; ++lat) {
+        float v = (float)lat / (float)lat_seg;
+        float p = v * (kPi * 0.5f);
+        float y = std::sin(p) * radius;
+        float rad = std::cos(p) * radius;
+
+        rlBegin(RL_LINES);
+        rlColor4f(0.05f, 0.05f, 0.05f, a * 0.55f);
+        for (int lon = 0; lon < lon_seg; ++lon) {
+            float u0 = (float)lon / (float)lon_seg * 2.0f * kPi;
+            float u1 = (float)(lon + 1) / (float)lon_seg * 2.0f * kPi;
+            if (in_door(u0, skirt_height + y) || in_door(u1, skirt_height + y)) continue;
+            rlVertex3f(dome_center.x + std::cos(u0) * rad, dome_center.y + y, dome_center.z + std::sin(u0) * rad);
+            rlVertex3f(dome_center.x + std::cos(u1) * rad, dome_center.y + y, dome_center.z + std::sin(u1) * rad);
+        }
+        rlEnd();
+    }
+
+    // --- Linhas de longitude (meridianos) ---
+    for (int lon = 0; lon < lon_seg; ++lon) {
+        float u = (float)lon / (float)lon_seg * 2.0f * kPi;
+        float cu = std::cos(u), su = std::sin(u);
+
+        rlBegin(RL_LINES);
+        rlColor4f(0.05f, 0.05f, 0.05f, a * 0.55f);
+        for (int lat = 0; lat < lat_seg; ++lat) {
+            float v0 = (float)lat / (float)lat_seg;
+            float v1 = (float)(lat + 1) / (float)lat_seg;
+            float p0 = v0 * (kPi * 0.5f), p1 = v1 * (kPi * 0.5f);
+            float y0 = std::sin(p0) * radius, y1 = std::sin(p1) * radius;
+            float rad0 = std::cos(p0) * radius, rad1 = std::cos(p1) * radius;
+            if (in_door(u, skirt_height + y0) && in_door(u, skirt_height + y1)) continue;
+            rlVertex3f(dome_center.x + cu * rad0, dome_center.y + y0, dome_center.z + su * rad0);
+            rlVertex3f(dome_center.x + cu * rad1, dome_center.y + y1, dome_center.z + su * rad1);
+        }
+        rlEnd();
+    }
+}
 
 // Renderizar parede vertical texturizada (para laterais do terreno em altura). Fica manual
 // (rlgl): geometria de UV customizado por face (parede extrudada entre duas alturas,

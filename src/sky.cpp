@@ -27,10 +27,7 @@ extern float g_day_time;
 extern SkyConfig g_sky_cfg;
 extern std::vector<ShootingStar> g_shooting_stars;
 
-// kDayLength: own copy of the same compile-time literal main.cpp keeps (and lighting.cpp
-// too) - not shared via extern since it's compile-time state, not mutable, same pattern as
-// kDayLength in modules_building.cpp/minimap.cpp.
-static constexpr float kDayLength = 150.0f; // seconds
+// kDayLength agora vem de game_state.h (era uma copia local aqui).
 
 // ============= ALIEN SKY SYSTEM (esferas reais + parallax) =============
 
@@ -184,7 +181,15 @@ static void render_lit_sphere(const Vec3& center, float radius, const Vec3& ligh
                               float base_r, float base_g, float base_b, float alpha,
                               float ambient, float diffuse_mul, float spec_mul,
                               float noise_freq = 0.0f, float noise_amp = 0.0f,
-                              int lat_seg = 18, int lon_seg = 24) {
+                              int lat_seg = 18, int lon_seg = 24,
+                              // Bandas de nuvem tipo gigante gasoso (Jupiter/Polyphemus):
+                              // opcional, so ativa se band_freq>0 - mistura entre a cor base
+                              // e band_r/g/b conforme a latitude do vertice (yy, ja calculado
+                              // pelo mesh abaixo), com turbulencia de baixa frequencia por
+                              // cima pra as faixas nao ficarem geometricas demais. Default 0
+                              // preserva o comportamento antigo pro sol/luas.
+                              float band_freq = 0.0f, float band_amp = 0.0f,
+                              float band_r = 0.0f, float band_g = 0.0f, float band_b = 0.0f) {
     Vec3 ldir = vec3_normalize(light_dir);
     for (int lat = 0; lat < lat_seg; ++lat) {
         float v0 = -0.5f + (float)lat / (float)lat_seg;
@@ -220,9 +225,20 @@ static void render_lit_sphere(const Vec3& center, float radius, const Vec3& ligh
                     nvar = (perlin(p.x * noise_freq + 133.0f, p.z * noise_freq + 617.0f) - 0.5f) * noise_amp;
                 }
                 float lit = std::max(0.0f, ambient + ndl * diffuse_mul + nvar);
-                out_c[0] = clamp01(base_r * lit + spec);
-                out_c[1] = clamp01(base_g * lit + spec * 0.95f);
-                out_c[2] = clamp01(base_b * lit + spec * 0.90f);
+
+                float cr = base_r, cg = base_g, cb = base_b;
+                if (band_freq > 0.00001f) {
+                    float band_wave = std::sin(yy * band_freq * kPi) * 0.5f + 0.5f;
+                    float turb = perlin(p.x * 0.006f + 1300.0f, p.z * 0.006f + 1300.0f);
+                    float band_t = clamp01(band_wave * 0.7f + turb * 0.3f) * band_amp;
+                    cr = lerp(base_r, band_r, band_t);
+                    cg = lerp(base_g, band_g, band_t);
+                    cb = lerp(base_b, band_b, band_t);
+                }
+
+                out_c[0] = clamp01(cr * lit + spec);
+                out_c[1] = clamp01(cg * lit + spec * 0.95f);
+                out_c[2] = clamp01(cb * lit + spec * 0.90f);
                 out_c[3] = alpha;
                 out_p = p;
             };
@@ -242,6 +258,46 @@ static void render_lit_sphere(const Vec3& center, float radius, const Vec3& ligh
         }
         rlEnd();
     }
+}
+
+// Anel planetario (tipo Saturno) - nao existia nenhuma geometria de anel antes desta mudanca
+// (so discos billboard sempre de frente pra camera, usados como halo de brilho). Este e um
+// anulus PLANO com eixo fixo (inclinado por tilt_deg em torno do eixo X, nao billboard -
+// senao pareceria sempre "de frente", nunca um disco visto de lado). Desenhado sem teste de
+// profundidade (igual ao resto do ceu, ver rlDisableDepthTest() em render_alien_sky) - o anel
+// inteiro e pintado depois da esfera do planeta, entao visualmente fica sempre "por cima",
+// uma simplificacao aceitavel pra um ceu estilizado (sem oclusao correta do lado de tras).
+// Alpha decai da borda externa (cheio) pra interna (mais fraco) pra parecer um leque de
+// particulas/poeira em vez de um disco solido uniforme.
+static void render_planet_ring(const Vec3& center, float inner_r, float outer_r, float tilt_deg,
+                                float r, float g, float b, float alpha, int segments = 72) {
+    float tilt = tilt_deg * (kPi / 180.0f);
+    float ct = std::cos(tilt), st = std::sin(tilt);
+    auto ring_point = [&](float radius, float angle) -> Vec3 {
+        float x = radius * std::cos(angle);
+        float z0 = radius * std::sin(angle);
+        return vec3_add(center, Vec3{x, z0 * st, z0 * ct});
+    };
+
+    rlBegin(RL_TRIANGLES);
+    Vec3 prev_in{}, prev_out{};
+    bool have_prev = false;
+    for (int i = 0; i <= segments; ++i) {
+        float a = (float)i / (float)segments * 2.0f * kPi;
+        Vec3 pin = ring_point(inner_r, a);
+        Vec3 pout = ring_point(outer_r, a);
+        if (have_prev) {
+            rlColor4f(r, g, b, alpha * 0.20f); rlVertex3f(prev_in.x, prev_in.y, prev_in.z);
+            rlColor4f(r, g, b, alpha);         rlVertex3f(prev_out.x, prev_out.y, prev_out.z);
+            rlColor4f(r, g, b, alpha);         rlVertex3f(pout.x, pout.y, pout.z);
+
+            rlColor4f(r, g, b, alpha * 0.20f); rlVertex3f(prev_in.x, prev_in.y, prev_in.z);
+            rlColor4f(r, g, b, alpha);         rlVertex3f(pout.x, pout.y, pout.z);
+            rlColor4f(r, g, b, alpha * 0.20f); rlVertex3f(pin.x, pin.y, pin.z);
+        }
+        prev_in = pin; prev_out = pout; have_prev = true;
+    }
+    rlEnd();
 }
 
 // GL_POINTS decomposition: each star becomes a tiny camera-facing RL_QUADS billboard quad
@@ -290,12 +346,19 @@ static void render_star_layer(float cam_x, float cam_z, float day_phase, float n
         float sx = origin_x + std::cos(theta) * rr * dist;
         float sy = 190.0f + y01 * 980.0f;
         float sz = origin_z + std::sin(theta) * rr * dist;
-        float twinkle = 0.45f + 0.55f * std::sin((float)i * 0.37f + day_phase * 12.0f);
-        float a = night_alpha * twinkle * 0.9f;
+        // Antes usava day_phase (muda devagar ao longo do "dia" inteiro, ~240s) pro
+        // piscar - a estrela levava dezenas de segundos pra completar 1 ciclo, lendo como
+        // parada. g_day_time (segundos reais decorridos) com uma velocidade por estrela
+        // (via w, cada uma pisca num ritmo levemente diferente) da o cintilar de verdade.
+        float twinkle_speed = 1.4f + w * 2.6f;
+        float twinkle = 0.5f + 0.5f * std::sin(g_day_time * twinkle_speed + (float)i * 12.9898f);
+        bool bright_star = (i % 31) == 0; // umas poucas estrelas "de destaque", maiores/mais fixas
+        float a = night_alpha * (bright_star ? (0.85f + 0.15f * twinkle) : (0.35f + 0.65f * twinkle)) * 0.95f;
         float sr = 0.82f + 0.16f * u;
         float sg = 0.82f + 0.16f * v;
         float sb = 0.90f + 0.10f * w;
-        render_point_billboard(sx, sy, sz, kStarHalfSize, sr, sg, sb, a);
+        float star_size = bright_star ? kStarHalfSize * 1.8f : kStarHalfSize;
+        render_point_billboard(sx, sy, sz, star_size, sr, sg, sb, a);
     }
     rlEnd();
 }
@@ -412,7 +475,63 @@ static void render_shooting_stars(float cam_x, float cam_y, float cam_z, float n
 }
 
 // Funcao principal para renderizar todo o ceu alienigena
-void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_phase, float atmos_factor) {
+// Montanhas distantes fixas no horizonte - pedido do jogador: ao voar alto, o plano de fundo
+// (terreno real, culled/enevoado a partir de view_radius, ver main.cpp) lia como um "oceano"
+// liso/escuro sem relevo. Isso e' um pano de fundo puramente decorativo (sem colisao, sem
+// ligacao com o heightmap de verdade), no MESMO estilo/raio de parallax=1 da cupula do ceu
+// (render_sky_gradient_dome acima) - segue a camera em X/Z (nunca se aproxima, sempre "no
+// horizonte") mas o perfil da silhueta depende so' do angulo absoluto no mundo, entao fica
+// sempre no mesmo lugar relativo ao horizonte (as "montanhas fixas" pedidas), nao gira com a
+// camera nem muda de forma ao voar/andar.
+static void render_distant_mountains(float cam_x, float cam_z, float ground_y, const SkyPalette& p) {
+    constexpr int kSegs = 96;
+    constexpr float kRadius = 780.0f;  // alem do teto real de view_radius (520) - nunca alcancavel
+    // A base segue a altura do TERRENO sob o jogador (ground_y), NAO a altitude da camera -
+    // um relevo distante de verdade fica grudado no chao; ao voar, ele deve recuar/afundar no
+    // campo de visao (comportamento esperado de olhar pra baixo de cima), nao subir junto com
+    // a camera. A 1a tentativa usava cam_y (altura da camera) e piorava exatamente o bug
+    // reportado: as montanhas "subiam" voando, lendo como se estivessem flutuando no ceu.
+    float kBaseY = ground_y - 4.0f;
+
+    // Silhueta um pouco mais escura que a cor do horizonte, pra ler como montanha contra o
+    // ceu (perspectiva atmosferica simplificada: mais escura que o ceu, mas nao preta).
+    float mr = p.hz_r * 0.50f;
+    float mg = p.hz_g * 0.55f;
+    float mb = p.hz_b * 0.62f;
+
+    rlSetTexture(0);
+    rlDisableDepthTest();
+    rlBegin(RL_TRIANGLES);
+
+    float prev_bx = 0, prev_bz = 0, prev_peak = 0;
+    for (int i = 0; i <= kSegs; ++i) {
+        float ang = (float)i / (float)kSegs * 2.0f * kPi;
+        // Perfil determinado so pelo angulo absoluto (nao pela posicao/direcao da camera) -
+        // varias frequencias de seno somadas pra parecer uma cordilheira serrilhada, nao uma
+        // onda unica e lisa.
+        float peak = 55.0f
+            + 45.0f * (0.5f + 0.5f * std::sin(ang * 3.0f + 1.7f))
+            + 25.0f * (0.5f + 0.5f * std::sin(ang * 7.0f + 4.1f))
+            + 12.0f * (0.5f + 0.5f * std::sin(ang * 13.0f + 0.4f));
+        float bx = cam_x + std::cos(ang) * kRadius;
+        float bz = cam_z + std::sin(ang) * kRadius;
+
+        if (i > 0) {
+            rlColor4f(mr, mg, mb, 1.0f);
+            rlVertex3f(prev_bx, kBaseY, prev_bz);
+            rlVertex3f(prev_bx, kBaseY + prev_peak, prev_bz);
+            rlVertex3f(bx, kBaseY + peak, bz);
+
+            rlVertex3f(prev_bx, kBaseY, prev_bz);
+            rlVertex3f(bx, kBaseY + peak, bz);
+            rlVertex3f(bx, kBaseY, bz);
+        }
+        prev_bx = bx; prev_bz = bz; prev_peak = peak;
+    }
+    rlEnd();
+}
+
+void render_alien_sky(float cam_x, float cam_y, float cam_z, float ground_y, float day_phase, float atmos_factor) {
     float night_alpha = compute_night_alpha(day_phase);
     SkyPalette palette = compute_sky_palette(day_phase, atmos_factor);
 
@@ -421,6 +540,7 @@ void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_phase, fl
     rlSetTexture(0);
 
     render_sky_gradient_dome(cam_x, cam_z, palette);
+    render_distant_mountains(cam_x, cam_z, ground_y, palette);
     render_star_layer(cam_x, cam_z, day_phase, night_alpha);
     render_nebula_layer(cam_x, cam_z, day_phase, night_alpha);
 
@@ -455,13 +575,19 @@ void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_phase, fl
         planet_az += (sun_dir.x >= 0.0f) ? -0.95f : 0.95f;
         planet_pos = body_from_spherical(planet_az, planet_el, g_sky_cfg.planet_distance, g_sky_cfg.planet_parallax);
     }
+    // Gigante gasoso estilo Polyphemus (Avatar): teal profundo com bandas de nuvem claras,
+    // turbulencia leve por cima pra as bandas nao ficarem geometricas demais. Cor/banding
+    // era um azul-acinzentado apagado com ruido manchado (sem bandas) antes desta mudanca.
     render_lit_sphere(planet_pos, g_sky_cfg.planet_radius, sun_dir, g_camera.position,
-                      0.20f, 0.28f, 0.42f, 0.98f,
-                      0.22f, 0.90f, 0.18f,
-                      0.010f, 0.22f, 20, 28);
+                      0.10f, 0.40f, 0.44f, 0.98f,
+                      0.24f, 0.88f, 0.08f,
+                      0.012f, 0.10f, 24, 32,
+                      7.0f, 0.85f, 0.80f, 0.92f, 0.86f);
     rlSetBlendMode(RL_BLEND_ADDITIVE);
-    render_billboard_disc(planet_pos, g_sky_cfg.planet_radius * 1.45f, 0.46f, 0.60f, 0.90f, night_alpha * 0.16f, 34);
+    render_billboard_disc(planet_pos, g_sky_cfg.planet_radius * 1.45f, 0.55f, 0.85f, 0.80f, 0.05f + night_alpha * 0.20f, 34);
     rlSetBlendMode(RL_BLEND_ALPHA);
+    render_planet_ring(planet_pos, g_sky_cfg.planet_radius * 1.55f, g_sky_cfg.planet_radius * 2.55f,
+                       22.0f, 0.82f, 0.88f, 0.86f, 0.32f);
 
     float moon_phase = sky_days * std::max(0.0f, g_sky_cfg.moon_orbit_speed) * 0.08f;
     float moon2_phase = sky_days * std::max(0.0f, g_sky_cfg.moon2_orbit_speed) * 0.10f;

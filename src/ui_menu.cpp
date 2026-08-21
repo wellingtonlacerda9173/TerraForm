@@ -13,6 +13,8 @@
 #include "render_primitives.h"
 #include "camera.h"
 #include "lighting.h"
+#include "audio.h"
+#include "config_io.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -49,13 +51,8 @@ extern int g_pause_selection;
 extern int g_menu_selection;
 extern bool g_quit;
 
-// WORLD_WIDTH/WORLD_HEIGHT/kDayLength: compile-time literals (not mutable state) defined in
-// main.cpp; kept here as this file's own copy rather than shared via extern - same pattern as
-// the kDayLength duplication already used in modules_building.cpp/minimap.cpp/sky.cpp/
-// lighting.cpp/ui_hud.cpp (kBase*Max there).
-static const int WORLD_WIDTH = 768;
-static const int WORLD_HEIGHT = 384;
-static constexpr float kDayLength = 150.0f; // seconds
+// kWorldWidth/kWorldHeight agora vem de world.h, kDayLength de game_state.h (eram copias
+// locais aqui - ver world.h/game_state.h pra detalhes da consolidacao).
 
 // kColorPanelBorder: same "own copy of a compile-time-ish literal" reasoning as above - this
 // is an internal-linkage (static const float[]) color-table entry defined in main.cpp
@@ -142,7 +139,7 @@ void render_menus(int win_w, int win_h) {
                 {"Salvar Jogo", 1},
                 {"Carregar Jogo", 2},
                 {"Configuracoes", 3},
-                {"Novo Jogo", 4}
+                {"Menu Principal", 4}
             };
 
             g_pause_selection = -1;  // Reset selection
@@ -166,11 +163,15 @@ void render_menus(int win_w, int win_h) {
             start_y += 18.0f;
             draw_text(center_x, start_y, "Espaco - Pular  |  Shift - Correr", 0.65f, 0.65f, 0.70f, 0.85f);
             start_y += 18.0f;
-            draw_text(center_x, start_y, "Botao Direito - Rotacionar Camera", 0.65f, 0.65f, 0.70f, 0.85f);
+            draw_text(center_x, start_y, "Segurar Scroll - Rotacionar Camera", 0.65f, 0.65f, 0.70f, 0.85f);
             start_y += 18.0f;
-            draw_text(center_x, start_y, "Scroll - Zoom  |  1-9 - Selecionar Item", 0.65f, 0.65f, 0.70f, 0.85f);
+            draw_text(center_x, start_y, "Rolar Scroll - Zoom  |  1-9 - Selecionar Item", 0.65f, 0.65f, 0.70f, 0.85f);
             start_y += 18.0f;
-            draw_text(center_x, start_y, "Botao Esquerdo - Minerar/Construir", 0.65f, 0.65f, 0.70f, 0.85f);
+            draw_text(center_x, start_y, "Esquerdo - Minerar  |  Direito - Construir", 0.65f, 0.65f, 0.70f, 0.85f);
+            start_y += 18.0f;
+            draw_text(center_x, start_y, "P - Fabricar Pistola de Laser", 0.65f, 0.65f, 0.70f, 0.85f);
+            start_y += 18.0f;
+            draw_text(center_x, start_y, "Clique no icone dela na hotbar - equipar/desequipar", 0.65f, 0.65f, 0.70f, 0.85f);
 
         } else if (g_state == GameState::Menu) {
             // === MENU PRINCIPAL ESTILO MINECRAFT ===
@@ -231,9 +232,13 @@ void render_menus(int win_w, int win_h) {
         render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.0f, 0.0f, 0.0f, 0.85f);
 
         float menu_w = 480.0f;
-        float menu_h = 520.0f;  // Aumentado para opcoes de iluminacao
+        // Altura ideal (cabe as 13 opcoes + 2 cabecalhos de secao confortavelmente) - mas
+        // NUNCA passa da janela real (win_h - 20 de folga): sem esse teto, numa janela
+        // menor (o jogo permite ate 360px de altura, ver SetWindowMinSize) o painel
+        // simplesmente vazava pra fora da tela, cortando "Voltar" e as instrucoes no rodape.
+        float menu_h = std::min(560.0f, (float)win_h - 20.0f);
         float menu_x = win_w * 0.5f - menu_w * 0.5f;
-        float menu_y = win_h * 0.5f - menu_h * 0.5f;
+        float menu_y = std::max(10.0f, win_h * 0.5f - menu_h * 0.5f);
 
         // Background panel
         render_quad(menu_x, menu_y, menu_w, menu_h, 0.08f, 0.10f, 0.14f, 0.98f);
@@ -245,8 +250,12 @@ void render_menus(int win_w, int win_h) {
         std::string title = "CONFIGURACOES";
         draw_text(win_w * 0.5f - estimate_text_w_px(title) * 0.5f, menu_y + 25.0f, title, 0.95f, 0.95f, 0.95f, 1.0f);
 
-        float row_y = menu_y + 70.0f;
-        float row_h = 40.0f;
+        // row_h reduzido de 40 pra 30 (13 opcoes + 2 cabecalhos nao cabiam confortavelmente
+        // no valor antigo sem o painel ficar quase do tamanho da janela inteira) - todo o
+        // resto do bloco usa "row_y += row_h"/"row_h * 0.x" pra empilhar as linhas, entao
+        // um unico ajuste aqui reflete em tudo.
+        float row_y = menu_y + 55.0f;
+        float row_h = 30.0f;
         float label_x = menu_x + 30.0f;
         float value_x = menu_x + 280.0f;
 
@@ -323,10 +332,48 @@ void render_menus(int win_w, int win_h) {
         draw_text(value_x, row_y + 5.0f, vignette_buf, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
         row_y += row_h;
 
-        // Opcao: Voltar
+        // === OPCOES DE AUDIO ===
+        draw_text(label_x, row_y + 5.0f, "--- Audio ---", 0.9f, 0.75f, 0.3f, 0.9f);
+        row_y += row_h * 0.7f;
+
+        // Opcao: Musica Ativada
         bool sel8 = (g_settings_selection == 8);
         if (sel8) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
-        draw_text(label_x, row_y + 5.0f, "Voltar", sel8 ? 1.0f : 0.8f, sel8 ? 1.0f : 0.8f, sel8 ? 1.0f : 0.8f, 1.0f);
+        draw_text(label_x, row_y + 5.0f, "Musica", sel8 ? 1.0f : 0.8f, sel8 ? 1.0f : 0.8f, sel8 ? 1.0f : 0.8f, 1.0f);
+        const char* music_on_str = g_settings.music_enabled ? "Ligada" : "Desligada";
+        draw_text(value_x, row_y + 5.0f, music_on_str, g_settings.music_enabled ? 0.3f : 0.8f, g_settings.music_enabled ? 0.9f : 0.4f, 0.3f, 1.0f);
+        row_y += row_h;
+
+        // Opcao: Volume da Musica
+        bool sel9 = (g_settings_selection == 9);
+        if (sel9) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
+        draw_text(label_x, row_y + 5.0f, "Volume Musica", sel9 ? 1.0f : 0.8f, sel9 ? 1.0f : 0.8f, sel9 ? 1.0f : 0.8f, 1.0f);
+        char music_vol_buf[32];
+        snprintf(music_vol_buf, sizeof(music_vol_buf), "< %.0f%% >", g_settings.music_volume * 100.0f);
+        draw_text(value_x, row_y + 5.0f, music_vol_buf, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
+        row_y += row_h;
+
+        // Opcao: Efeitos Sonoros Ativados
+        bool sel10 = (g_settings_selection == 10);
+        if (sel10) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
+        draw_text(label_x, row_y + 5.0f, "Efeitos Sonoros", sel10 ? 1.0f : 0.8f, sel10 ? 1.0f : 0.8f, sel10 ? 1.0f : 0.8f, 1.0f);
+        const char* sfx_on_str = g_settings.sfx_enabled ? "Ligados" : "Desligados";
+        draw_text(value_x, row_y + 5.0f, sfx_on_str, g_settings.sfx_enabled ? 0.3f : 0.8f, g_settings.sfx_enabled ? 0.9f : 0.4f, 0.3f, 1.0f);
+        row_y += row_h;
+
+        // Opcao: Volume dos Efeitos
+        bool sel11 = (g_settings_selection == 11);
+        if (sel11) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
+        draw_text(label_x, row_y + 5.0f, "Volume Efeitos", sel11 ? 1.0f : 0.8f, sel11 ? 1.0f : 0.8f, sel11 ? 1.0f : 0.8f, 1.0f);
+        char sfx_vol_buf[32];
+        snprintf(sfx_vol_buf, sizeof(sfx_vol_buf), "< %.0f%% >", g_settings.sfx_volume * 100.0f);
+        draw_text(value_x, row_y + 5.0f, sfx_vol_buf, kColorPanelBorder[0], kColorPanelBorder[1], kColorPanelBorder[2], 1.0f);
+        row_y += row_h;
+
+        // Opcao: Voltar
+        bool sel12 = (g_settings_selection == 12);
+        if (sel12) render_quad(menu_x + 10.0f, row_y - 5.0f, menu_w - 20.0f, row_h, 0.25f, 0.45f, 0.70f, 0.5f);
+        draw_text(label_x, row_y + 5.0f, "Voltar", sel12 ? 1.0f : 0.8f, sel12 ? 1.0f : 0.8f, sel12 ? 1.0f : 0.8f, 1.0f);
 
         // Instrucoes
         draw_text(menu_x + 30.0f, menu_y + menu_h - 40.0f, "W/S: Navegar | A/D: Ajustar | Esc/Enter: Voltar | F3: Debug Lightmap", 0.6f, 0.65f, 0.70f, 0.9f);
@@ -348,6 +395,21 @@ void render_menus(int win_w, int win_h) {
 // extern here).
 static const char* kSavePath = "save_slot0.tf2d";
 
+// Geracao de mundo e sincrona (sem threads/fatiamento) e o mapa agora e bem maior
+// (kWorldWidth/kWorldHeight, ver world.h) - o "new World(...)" abaixo pode levar alguns
+// segundos. Sem isso pareceria que o jogo travou ao clicar em Novo Jogo. So desenha
+// um frame com a mensagem antes da chamada bloqueante (nao e uma barra de progresso real,
+// a geracao em si nao e fatiavel sem reescrever World::gen() em etapas).
+static void draw_loading_screen(const char* message) {
+    int win_w = GetScreenWidth();
+    int win_h = GetScreenHeight();
+    BeginDrawing();
+    ClearBackground(Color{8, 10, 14, 255});
+    float text_w = estimate_text_w_px(message);
+    draw_text((float)win_w * 0.5f - text_w * 0.5f, (float)win_h * 0.5f - 8.0f, message, 0.80f, 0.86f, 0.98f, 1.0f);
+    EndDrawing();
+}
+
 bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
                         bool f5_pressed, bool f9_pressed, bool l_pressed, bool q_pressed) {
     (void)dt;
@@ -359,7 +421,8 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
             switch (g_menu_selection) {
                 case 0:  // Novo Jogo
                     delete g_world;
-                    g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)(GetTime() * 1000000.0));
+                    draw_loading_screen("Gerando mundo...");
+                    g_world = new World(kWorldWidth, kWorldHeight, (unsigned)(GetTime() * 1000000.0));
                     spawn_player_new_game(*g_world);
                     g_cam_pos = g_player.pos;
                     g_day_time = kDayLength * 0.25f;
@@ -373,7 +436,7 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
                     g_drops.clear();
                     g_onboarding = OnboardingState();
                     g_state = GameState::Playing;
-                    show_tip("WASD para mover, Espaco para pular, Botao direito para girar camera", g_onboarding.shown_first_move);
+                    show_tip("WASD para mover, Espaco para pular, ESC para pausar/configuracoes", g_onboarding.shown_first_move);
                     return true;
                 case 1:  // Carregar Jogo
                     if (load_game(kSavePath)) {
@@ -395,7 +458,8 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
         }
         if (enter_pressed) {
             delete g_world;
-            g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)(GetTime() * 1000000.0));
+            draw_loading_screen("Gerando mundo...");
+            g_world = new World(kWorldWidth, kWorldHeight, (unsigned)(GetTime() * 1000000.0));
             spawn_player_new_game(*g_world);  // This sets O2, water, etc. to 100%
             g_cam_pos = g_player.pos;
             g_day_time = kDayLength * 0.25f;  // Start at morning
@@ -414,7 +478,7 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
             g_state = GameState::Playing;
 
             // Dica inicial de onboarding
-            show_tip("WASD para mover, Espaco para pular, Botao direito para girar camera", g_onboarding.shown_first_move);
+            show_tip("WASD para mover, Espaco para pular, ESC para pausar/configuracoes", g_onboarding.shown_first_move);
             return true;
         }
         if (l_pressed || f9_pressed) {
@@ -453,7 +517,7 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
                     g_state = GameState::Settings;
                     g_settings_selection = 0;
                     return true;
-                case 4:  // Novo Jogo
+                case 4:  // Menu Principal
                     g_state = GameState::Menu;
                     return true;
             }
@@ -510,13 +574,13 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
 
         // Navegar para cima
         if (w_now && !key_w_held) {
-            g_settings_selection = (g_settings_selection - 1 + 9) % 9;
+            g_settings_selection = (g_settings_selection - 1 + 13) % 13;
         }
         key_w_held = w_now;
 
         // Navegar para baixo
         if (s_now && !key_s_held) {
-            g_settings_selection = (g_settings_selection + 1) % 9;
+            g_settings_selection = (g_settings_selection + 1) % 13;
         }
         key_s_held = s_now;
 
@@ -552,24 +616,51 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
                     break;
                 case 4: // Iluminacao 2D
                     g_lighting.enabled = !g_lighting.enabled;
+                    g_settings.lighting_enabled = g_lighting.enabled;
                     break;
                 case 5: // Sombras
                     g_lighting.shadows_enabled = !g_lighting.shadows_enabled;
+                    g_settings.lighting_shadows_enabled = g_lighting.shadows_enabled;
                     break;
                 case 6: // Bloom
                     g_lighting.bloom_intensity = std::clamp(g_lighting.bloom_intensity + delta * 0.1f, 0.0f, 1.0f);
                     g_lighting.bloom_enabled = (g_lighting.bloom_intensity > 0.0f);
+                    g_settings.lighting_bloom_intensity = g_lighting.bloom_intensity;
                     break;
                 case 7: // Vinheta
                     g_lighting.vignette_intensity = std::clamp(g_lighting.vignette_intensity + delta * 0.1f, 0.0f, 0.6f);
+                    g_settings.lighting_vignette_intensity = g_lighting.vignette_intensity;
                     break;
-                case 8: // Voltar
+                case 8: // Musica Ativada
+                    g_settings.music_enabled = !g_settings.music_enabled;
                     break;
+                case 9: // Volume Musica - passo de 2% (pedido do jogador, os 10% de antes
+                    // eram grosso demais pra ajuste fino).
+                    g_settings.music_volume = std::clamp(g_settings.music_volume + delta * 0.02f, 0.0f, 1.0f);
+                    break;
+                case 10: // Efeitos Sonoros Ativados
+                    g_settings.sfx_enabled = !g_settings.sfx_enabled;
+                    break;
+                case 11: // Volume Efeitos - mesmo passo de 2% do Volume Musica acima.
+                    g_settings.sfx_volume = std::clamp(g_settings.sfx_volume + delta * 0.02f, 0.0f, 1.0f);
+                    break;
+                case 12: // Voltar
+                    break;
+            }
+            if (g_settings_selection >= 8 && g_settings_selection <= 11) {
+                apply_audio_settings(g_settings.music_volume, g_settings.music_enabled,
+                                      g_settings.sfx_volume, g_settings.sfx_enabled);
+            }
+            // Persiste QUALQUER mudanca nesta tela (sensibilidade/brilho/iluminacao/audio) -
+            // pedido do jogador: "o jogo nao guarda minhas configuracoes". Antes disso nada
+            // em GameSettings sobrevivia a um reinicio do processo.
+            if (g_settings_selection != 12) {
+                save_game_settings();
             }
         }
 
         // ESC ou Enter no "Voltar" fecha o menu
-        if (esc_pressed || (enter_pressed && g_settings_selection == 8)) {
+        if (esc_pressed || (enter_pressed && g_settings_selection == 12)) {
             g_state = GameState::Paused;
             return true;
         }
@@ -580,7 +671,8 @@ bool update_menu_input(float dt, bool esc_pressed, bool enter_pressed,
         // Death screen - wait for Enter to start new game
         if (enter_pressed) {
             delete g_world;
-            g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, (unsigned)(GetTime() * 1000000.0));
+            draw_loading_screen("Gerando mundo...");
+            g_world = new World(kWorldWidth, kWorldHeight, (unsigned)(GetTime() * 1000000.0));
             spawn_player_new_game(*g_world);
             g_cam_pos = g_player.pos;
             g_day_time = kDayLength * 0.25f;

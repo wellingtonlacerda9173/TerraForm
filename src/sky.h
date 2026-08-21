@@ -31,4 +31,10 @@ struct SkyPalette {
 // minimap.cpp.
 SkyPalette compute_sky_palette(float day_phase, float atmos_factor);
 void update_shooting_stars(float dt, float day_phase);
-void render_alien_sky(float cam_x, float cam_y, float cam_z, float day_phase, float atmos_factor);
+// ground_y: altura do terreno sob o jogador agora (g_player.ground_height, main.cpp) - usada
+// so' pelo pano de fundo de montanhas distantes (ver render_distant_mountains em sky.cpp)
+// pra manter a silhueta grudada no nivel do chao, nao na altitude de voo da camera (cam_y) -
+// senao as montanhas "subiam" junto com o jogador ao voar, lendo como flutuando no ceu em
+// vez de recuar corretamente pra baixo no campo de visao (como um relevo distante de verdade
+// faria visto de cima).
+void render_alien_sky(float cam_x, float cam_y, float cam_z, float ground_y, float day_phase, float atmos_factor);

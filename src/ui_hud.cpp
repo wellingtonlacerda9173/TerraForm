@@ -23,6 +23,23 @@
 #include <string>
 #include <vector>
 
+// Geometria compartilhada do painel direito (Fase/terraformacao) - unica fonte de verdade,
+// ver comentario completo em ui_hud.h. render_hud() (abaixo) e minimap.cpp's
+// render_minimap() usam as mesmas 2 funcoes em vez de recalcular os mesmos numeros de
+// forma independente (era assim antes - a causa raiz do minimapa sobrepondo o painel).
+static constexpr float kRightPanelBarW = 180.0f;
+static constexpr float kRightPanelBarGap = 18.0f;
+static constexpr float kRightPanelTopY = 18.0f;
+static constexpr float kRightPanelH = kRightPanelBarGap * 6.0f + 90.0f;
+
+float hud_right_panel_right_x(int win_w) {
+    return (float)win_w - 20.0f;
+}
+
+float hud_right_panel_bottom_y() {
+    return (kRightPanelTopY - 10.0f) + kRightPanelH;
+}
+
 // ============= HUD Rendering =============
 // Extracted verbatim from main.cpp's render_world() (original lines ~1707-2451): the
 // switch from 3D to 2D/ortho projection, the vignette effect, the lightmap/lights debug
@@ -69,6 +86,7 @@ extern int g_target_y;
 extern TerraPhase g_phase;
 extern float g_player_food;
 extern float g_player_oxygen;
+extern float g_suit_integrity;
 extern float g_player_water;
 extern float g_temperature;
 extern float g_terraform;
@@ -328,23 +346,41 @@ void render_hud(int win_w, int win_h) {
         }
 
         // ============= OBJETIVO ATUAL (logo abaixo da barra de terraformacao) =============
+        // 3 estados agora (era 2): objetivo principal 1-10, trilho de legado pos-vitoria
+        // 11-13, ou "Legado Completo!" quando os 13 acabam - ver objectives.h/.cpp.
         {
             std::string line1, line2;
-            bool all_done = objectives_all_complete();
-            if (all_done) {
-                line1 = "Marte Terraformado!";
+            int idx = objectives_current_index();
+            bool legacy_done = objectives_legacy_complete();
+            bool main_done = objectives_all_complete();
+            if (legacy_done) {
+                line1 = "Legado Completo!";
                 line2 = "Todos os objetivos concluidos - bom trabalho, colono.";
-            } else {
-                int idx = objectives_current_index();
+            } else if (main_done) {
                 const ObjectiveDef& def = objective_def(idx);
                 char hdr[96];
-                snprintf(hdr, sizeof(hdr), "Objetivo %d/%d: %s", idx + 1, kObjectiveCount, def.title);
+                snprintf(hdr, sizeof(hdr), "Legado %d/%d: %s", idx - kMainObjectiveCount + 1,
+                         kObjectiveCount - kMainObjectiveCount, def.title);
+                line1 = hdr;
+                line2 = def.hint;
+                if (def.related_module != Block::Air && !is_unlocked(def.related_module)) {
+                    line2 += "  (" + unlock_progress_string(def.related_module) + ")";
+                }
+                if ((ObjectiveId)idx == ObjectiveId::BankRefinedAlloy) {
+                    int have = std::max(0, g_inventory[(int)Block::RefinedAlloy]);
+                    line2 += "  (" + std::to_string(have) + "/20)";
+                }
+            } else {
+                const ObjectiveDef& def = objective_def(idx);
+                char hdr[96];
+                snprintf(hdr, sizeof(hdr), "Objetivo %d/%d: %s", idx + 1, kMainObjectiveCount, def.title);
                 line1 = hdr;
                 line2 = def.hint;
                 if (def.related_module != Block::Air && !is_unlocked(def.related_module)) {
                     line2 += "  (" + unlock_progress_string(def.related_module) + ")";
                 }
             }
+            bool all_done = legacy_done; // reaproveitado abaixo pra cor da borda
             float tw1 = estimate_text_w_px(line1);
             float tw2 = estimate_text_w_px(line2);
             float box_w = std::max(tw1, tw2) + 30.0f;
@@ -377,7 +413,7 @@ void render_hud(int win_w, int win_h) {
         bool at_base = (dist_to_base < g_base_cfg.safe_radius);
         
         // === FUNDO TRANSPARENTE DO HUD ESQUERDO ===
-        float left_panel_h = bar_gap * 10 + 100.0f;  // Altura aproximada do painel esquerdo (incluindo jetpack)
+        float left_panel_h = bar_gap * 11 + 100.0f;  // Altura aproximada do painel esquerdo (incluindo jetpack + traje)
         draw_hud_panel(x0 - 10.0f, y0 - 10.0f, bar_w + 20.0f, left_panel_h, 0.35f, 0.65f, 0.90f);
         
         // === LEFT PANEL: SUIT STATUS (Player) ===
@@ -434,11 +470,24 @@ void render_hud(int win_w, int win_h) {
         render_bar(x0, y0 + bar_gap * 4, bar_w, bar_h, jet_pct, 
             jet_r * jet_pulse, jet_g * jet_pulse, jet_b);
         std::string jet_label = jet_active ? "JETPACK ATIVO" : "Jetpack " + std::to_string((int)g_player.jetpack_fuel) + "%";
-        draw_text(x0 + 6.0f, y0 + bar_gap * 4 + 11.0f, jet_label, 
+        draw_text(x0 + 6.0f, y0 + bar_gap * 4 + 11.0f, jet_label,
             kColorTextPrimary[0], kColorTextPrimary[1], kColorTextPrimary[2], 0.90f);
-        
+
+        // Integridade do traje (0..100, decai continuamente longe da base - ver
+        // g_suit_integrity em main.cpp) - cinza-azulado normal, pisca vermelho quando
+        // critico (mesmo padrao de flash das outras barras).
+        float suit_pct = g_suit_integrity / 100.0f;
+        bool suit_crit = suit_pct < 0.30f;
+        float suit_flash = suit_crit ? (0.7f + 0.3f * std::sin(g_player.anim_frame * 6.0f)) : 1.0f;
+        float suit_r = suit_crit ? kColorDanger[0] * suit_flash : 0.55f;
+        float suit_g = suit_crit ? kColorDanger[1] * suit_flash : 0.60f;
+        float suit_b = suit_crit ? kColorDanger[2] * suit_flash : 0.68f;
+        render_bar(x0, y0 + bar_gap * 5, bar_w, bar_h, suit_pct, suit_r, suit_g, suit_b);
+        draw_text(x0 + 6.0f, y0 + bar_gap * 5 + 11.0f, "Traje " + std::to_string((int)g_suit_integrity) + "%",
+            kColorTextPrimary[0], kColorTextPrimary[1], kColorTextPrimary[2], 0.90f);
+
         // === LEFT PANEL: BASE STATUS ===
-        y0 += bar_gap * 5 + 15.0f;
+        y0 += bar_gap * 6 + 15.0f;
         
         // At base indicator
         if (at_base) {
@@ -470,11 +519,14 @@ void render_hud(int win_w, int win_h) {
         draw_text(x0 + 6.0f, y0 + bar_gap * 4 + 11.0f, "Integ " + std::to_string((int)g_base_integrity) + "/" + std::to_string((int)kBaseIntegrityMax), 0.90f, 0.90f, 0.90f, 0.90f);
         
         // === RIGHT PANEL: Terraforming Stats ===
-        float rx0 = win_w - bar_w - 30.0f;
-        float ry0 = 18.0f;
-        
+        // rx0/ry0/right_panel_h vem das funcoes compartilhadas (kRightPanelBarW/BarGap/
+        // TopY/H acima) - minimap.cpp ancora o minimapa nas mesmas 2 funcoes, entao os
+        // dois nunca mais podem ficar dessincronizados.
+        float rx0 = hud_right_panel_right_x(win_w) - kRightPanelBarW;
+        float ry0 = kRightPanelTopY;
+
         // === FUNDO TRANSPARENTE DO HUD DIREITO ===
-        float right_panel_h = bar_gap * 6 + 90.0f;  // Altura aproximada do painel direito
+        float right_panel_h = kRightPanelH;
         draw_hud_panel(rx0 - 10.0f, ry0 - 10.0f, bar_w + 20.0f, right_panel_h, 0.90f, 0.65f, 0.35f);
         
         // Phase indicator
@@ -677,8 +729,12 @@ void render_hud(int win_w, int win_h) {
         
         float slot_size = 48.0f;
         float slot_gap = 4.0f;
-        
+
         // === HOTBAR UNIFICADA (centrada na base da tela) ===
+        // Pistola de Laser NAO entra aqui - fica num cluster de botoes proprio, separado dos
+        // materiais/modulos (ver render_weapon_cluster() logo abaixo, pedido do jogador: "a
+        // pistola ficou junto dos materiais quero um menu assim", referenciando o cluster de
+        // botoes redondos de arma/punho no canto da tela em jogos tipo Last Day on Earth).
         int total_slots = res_count + (int)module_slots.size();
         float total_w = total_slots * slot_size + (total_slots - 1) * slot_gap;
         float hx = win_w * 0.5f - total_w * 0.5f;
@@ -735,7 +791,7 @@ void render_hud(int win_w, int win_h) {
             
             bool sel = (g_selected == module_slots[i]);
             bool hovered = mouse_over_slot(bx, hy, slot_size);
-            CraftCost c = module_cost(module_slots[i]);
+            CraftCost c = get_module_cost(module_slots[i]);
             bool can_build = can_afford(c);
             int key_num = -1;
             if (i < 4) key_num = (i < 3) ? (7 + i) : 0;
@@ -746,7 +802,93 @@ void render_hud(int win_w, int win_h) {
             }
             draw_minicraft_slot(bx, hy, slot_size, sel, module_slots[i], key_num, can_build ? 1 : 0);
         }
-        
+
+        // === CLUSTER DE ACAO (Ferramenta / Arma) - separado da hotbar de materiais/modulos =====
+        // Pedido do jogador com screenshot de referencia (Last Day on Earth): botoes redondos
+        // dedicados de "punho"/arma num canto da tela, nao misturados com os icones de
+        // materiais. So' existe o icone da Pistola (nenhuma outra arma no jogo ainda) - o
+        // botao "Ferramenta" mostra o ultimo item normal selecionado (o que volta a ficar
+        // ativo ao desequipar) em vez de um icone fixo de punho (sem asset pra isso).
+        {
+            static Block s_last_non_weapon = Block::Dirt;
+            if (g_selected != Block::LaserPistol) s_last_non_weapon = g_selected;
+            bool has_pistol = g_inventory[(int)Block::LaserPistol] > 0;
+
+            auto mouse_in_circle = [&](float cx, float cy, float r) -> bool {
+                float dx = g_mouse_x - cx, dy = g_mouse_y - cy;
+                return (dx * dx + dy * dy) <= r * r;
+            };
+
+            auto draw_action_button = [&](float cx, float cy, float radius, Block icon_block, bool selected) {
+                if (selected) render_circle(cx, cy, radius + 5.0f, 0.95f, 0.85f, 0.30f, 0.95f);
+                render_circle(cx, cy, radius + 2.0f, 0.05f, 0.05f, 0.08f, 0.95f);
+                render_circle(cx, cy, radius, 0.20f, 0.22f, 0.28f, 0.95f);
+
+                float icon_size = radius * 1.15f;
+                float ix = cx - icon_size * 0.5f;
+                float iy = cy - icon_size * 0.5f;
+                if (icon_block == Block::LaserPistol) {
+                    // Silhueta pixel-art de pistola (2 retangulos: cano + cabo, mais a ponta
+                    // brilhante) em vez de reaproveitar um icone de bloco generico que nao lia
+                    // como arma nenhuma - unico jeito de ter uma forma reconhecivel sem asset
+                    // novo de textura.
+                    float br_w = icon_size * 0.80f, br_h = icon_size * 0.24f;
+                    float br_x = cx - br_w * 0.5f - icon_size * 0.06f, br_y = cy - icon_size * 0.16f;
+                    render_quad(br_x, br_y, br_w, br_h, 0.16f, 0.18f, 0.22f, 0.95f);
+
+                    float gr_w = icon_size * 0.24f, gr_h = icon_size * 0.44f;
+                    float gr_x = br_x + icon_size * 0.10f, gr_y = br_y + br_h * 0.55f;
+                    render_quad(gr_x, gr_y, gr_w, gr_h, 0.14f, 0.15f, 0.18f, 0.95f);
+
+                    float tip_w = icon_size * 0.16f, tip_h = br_h * 0.7f;
+                    render_quad(br_x + br_w - tip_w * 0.4f, br_y + br_h * 0.15f, tip_w, tip_h,
+                                0.35f, 0.90f, 1.0f, 0.95f);
+                } else if (g_tex_atlas != 0) {
+                    BlockTex bt = block_tex(icon_block);
+                    float tint_r = 1.0f, tint_g = 1.0f, tint_b = 1.0f, alpha = 1.0f;
+                    if (bt.uses_tint || bt.transparent) {
+                        float cr, cg, cb, ca;
+                        block_color(icon_block, 128, 256, cr, cg, cb, ca);
+                        if (bt.uses_tint) { tint_r = cr; tint_g = cg; tint_b = cb; }
+                        if (bt.transparent) alpha = ca;
+                    }
+                    render_quad_tex(ix, iy, icon_size, icon_size * 0.5f, bt.top, tint_r, tint_g, tint_b, alpha);
+                    render_quad_tex(ix, iy + icon_size * 0.5f, icon_size, icon_size * 0.5f, bt.side,
+                                    tint_r * 0.75f, tint_g * 0.75f, tint_b * 0.75f, alpha);
+                } else {
+                    float r, g, bl, a;
+                    block_color(icon_block, 128, 256, r, g, bl, a);
+                    render_quad(ix, iy, icon_size, icon_size * 0.5f, r, g, bl, 0.95f);
+                    render_quad(ix, iy + icon_size * 0.5f, icon_size, icon_size * 0.5f, r * 0.7f, g * 0.7f, bl * 0.7f, 0.95f);
+                }
+            };
+
+            float btn_radius = 30.0f;
+            float btn_gap = 16.0f;
+            float cluster_cx = hud_right_panel_right_x(win_w) - btn_radius - 6.0f;
+            float cluster_top_y = hud_right_panel_bottom_y() + 240.0f;
+
+            float tool_cy = cluster_top_y + btn_radius;
+            bool tool_selected = (g_selected != Block::LaserPistol);
+            if (g_mouse_left_clicked && mouse_in_circle(cluster_cx, tool_cy, btn_radius) && g_state == GameState::Playing) {
+                g_selected = s_last_non_weapon;
+                g_mouse_left_clicked = false;
+            }
+            draw_action_button(cluster_cx, tool_cy, btn_radius, s_last_non_weapon, tool_selected);
+            draw_text(cluster_cx - 34.0f, tool_cy + btn_radius + 4.0f, "Ferramenta", 0.75f, 0.78f, 0.85f, 0.85f);
+
+            if (has_pistol) {
+                float gun_cy = tool_cy + btn_radius * 2.0f + btn_gap + 20.0f;
+                bool gun_selected = (g_selected == Block::LaserPistol);
+                if (g_mouse_left_clicked && mouse_in_circle(cluster_cx, gun_cy, btn_radius) && g_state == GameState::Playing) {
+                    g_selected = gun_selected ? s_last_non_weapon : Block::LaserPistol;
+                    g_mouse_left_clicked = false;
+                }
+                draw_action_button(cluster_cx, gun_cy, btn_radius, Block::LaserPistol, gun_selected);
+                draw_text(cluster_cx - 16.0f, gun_cy + btn_radius + 4.0f, "Arma", 0.75f, 0.78f, 0.85f, 0.85f);
+            }
+        }
+
         // Info do item selecionado (acima da hotbar)
         {
             std::string s = std::string(block_name(g_selected));
@@ -754,7 +896,7 @@ void render_hud(int win_w, int win_h) {
                 if (!is_unlocked(g_selected)) {
                     s += " [" + unlock_progress_string(g_selected) + "]";
                 } else {
-                    s += " - " + cost_string(module_cost(g_selected));
+                    s += " - " + cost_string(get_module_cost(g_selected));
                 }
             } else {
                 s += " x" + std::to_string(std::max(0, g_inventory[(int)g_selected]));
@@ -830,6 +972,23 @@ void render_hud(int win_w, int win_h) {
                 float rr = g_target_in_range ? 0.85f : 0.95f;
                 float gg = g_target_in_range ? 0.95f : 0.35f;
                 draw_text(20.0f, win_h - 100.0f, std::string("Alvo: ") + block_name(b), rr, gg, 0.25f, 0.95f);
+
+                // Upgrade de modulo (tecla R) - so mostra a dica quando mirando um modulo
+                // ja construido em alcance (mesmo padrao de "Alvo:" acima).
+                if (g_target_in_range && is_module(b)) {
+                    for (const Module& m : g_modules) {
+                        if (m.x != g_target_x || m.y != g_target_y) continue;
+                        if (m.upgraded) {
+                            draw_text(20.0f, win_h - 82.0f, "Aprimorado", 0.55f, 0.90f, 0.55f, 0.90f);
+                        } else {
+                            CraftCost uc = get_module_upgrade_cost(b);
+                            bool affordable = can_afford(uc);
+                            draw_text(20.0f, win_h - 82.0f, "[R] Aprimorar (" + module_cost_string(uc) + ")",
+                                affordable ? 0.85f : 0.95f, affordable ? 0.95f : 0.35f, 0.25f, 0.90f);
+                        }
+                        break;
+                    }
+                }
             }
         }
 

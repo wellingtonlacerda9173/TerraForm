@@ -1,6 +1,8 @@
 #include "objectives.h"
 
 #include "game_state.h"
+#include "modules_building.h"    // Module, g_modules (UpgradeThreeModules)
+#include "inventory_crafting.h"  // g_inventory (BankRefinedAlloy)
 
 #include <algorithm>
 #include <array>
@@ -23,11 +25,16 @@ static const ObjectiveDef kObjectives[kObjectiveCount] = {
     {"Verdejar o planeta", "Construa um Terraformer Beacon.", Block::TerraformerBeacon},
     {"Tornar Marte habitavel", "Aguarde temperatura e atmosfera alcancarem a fase Habitavel.", Block::Air},
     {"Terraformar Marte", "Continue espalhando vegetacao ate completar a terraformacao.", Block::Air},
+    // Trilho de legado (pos-vitoria) - ver comentario em objectives.h.
+    {"Estabelecer uma oficina", "Construa uma Oficina.", Block::Workshop},
+    {"Aprimorar a colonia", "Aprimore (tecla R) pelo menos 3 modulos diferentes.", Block::Air},
+    {"Refinar um legado", "Produza 20 unidades de Liga Refinada (tecla G, mirando uma Oficina).", Block::Air},
 };
 
 static int g_current = 0;
 static std::array<bool, kBlockTypeCount> g_ever_built = {};
 static float g_victory_celebration = 0.0f;
+static float g_legacy_celebration = 0.0f;
 
 const ObjectiveDef& objective_def(int index) {
     index = std::clamp(index, 0, kObjectiveCount - 1);
@@ -35,7 +42,12 @@ const ObjectiveDef& objective_def(int index) {
 }
 
 int objectives_current_index() { return g_current; }
-bool objectives_all_complete() { return g_current >= kObjectiveCount; }
+// Preserva a semantica original ("os 10 objetivos principais estao completos") pros 3
+// call sites externos que dependem dela (ui_hud.cpp mostra o overlay de vitoria,
+// save_load.cpp restaura g_victory, world.cpp dispara o toast de mudanca de fase) -
+// nenhum deles deve esperar ate os 13 (legado) pra disparar.
+bool objectives_all_complete() { return g_current >= kMainObjectiveCount; }
+bool objectives_legacy_complete() { return g_current >= kObjectiveCount; }
 
 void notify_module_built(Block type) {
     if (type == Block::Air) return;
@@ -46,9 +58,11 @@ void reset_objectives() {
     g_current = 0;
     g_ever_built.fill(false);
     g_victory_celebration = 0.0f;
+    g_legacy_celebration = 0.0f;
 }
 
 float objectives_victory_celebration_remaining() { return g_victory_celebration; }
+float objectives_legacy_celebration_remaining() { return g_legacy_celebration; }
 
 const bool* objectives_ever_built_snapshot() { return g_ever_built.data(); }
 
@@ -60,6 +74,7 @@ void objectives_load_state(int current_index, const bool* ever_built, int ever_b
         for (int i = 0; i < n; ++i) g_ever_built[(size_t)i] = ever_built[i];
     }
     g_victory_celebration = 0.0f;
+    g_legacy_celebration = 0.0f;
 }
 
 static bool check_objective(int index) {
@@ -84,6 +99,17 @@ static bool check_objective(int index) {
             return (int)g_phase >= (int)TerraPhase::Habitable;
         case ObjectiveId::TerraformComplete:
             return g_phase == TerraPhase::Terraformed;
+        case ObjectiveId::BuildWorkshop:
+            return g_ever_built[(size_t)Block::Workshop];
+        case ObjectiveId::UpgradeThreeModules: {
+            int upgraded = 0;
+            for (const Module& m : g_modules) {
+                if (m.upgraded) ++upgraded;
+            }
+            return upgraded >= 3;
+        }
+        case ObjectiveId::BankRefinedAlloy:
+            return g_inventory[(size_t)Block::RefinedAlloy] >= 20;
     }
     return false;
 }
@@ -92,6 +118,9 @@ void update_objectives(float dt) {
     if (g_victory_celebration > 0.0f) {
         g_victory_celebration = std::max(0.0f, g_victory_celebration - dt);
     }
+    if (g_legacy_celebration > 0.0f) {
+        g_legacy_celebration = std::max(0.0f, g_legacy_celebration - dt);
+    }
 
     if (g_current >= kObjectiveCount) return;
     if (!check_objective(g_current)) return;
@@ -99,9 +128,14 @@ void update_objectives(float dt) {
     show_unlock_popup("Objetivo concluido!", kObjectives[g_current].title);
     ++g_current;
 
-    if (g_current >= kObjectiveCount) {
+    if (g_current == kMainObjectiveCount) {
         g_victory = true;
         g_victory_celebration = 8.0f;
         set_toast("Marte terraformado! Voce venceu!", 6.0f);
+    }
+
+    if (g_current == kObjectiveCount) {
+        g_legacy_celebration = 6.0f;
+        set_toast("Legado completo! A colonia prospera muito alem da terraformacao.", 6.0f);
     }
 }

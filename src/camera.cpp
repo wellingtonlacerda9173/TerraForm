@@ -336,8 +336,24 @@ void update_camera_for_frame() {
     float ry = get_player_render_y();
     float frame_dt = std::max(1.0f / 240.0f, g_physics_cfg.fixed_timestep);
 
+    // Suaviza so a altura vertical do foco - o X/Z e o proprio personagem continuam seguindo
+    // a fisica direto. Sem isso, cada micro-degrau de terreno subido instantaneamente por
+    // try_step_climb (player_physics.cpp) virava um solavanco na camera; uma ladeira em
+    // varios degraus seguidos (mais fronteiras de tile cruzadas por metro andado em certos
+    // angulos) somava esses solavancos numa tremida perceptivel.
+    static float s_cam_smooth_y = 0.0f;
+    static bool s_cam_smooth_y_init = false;
+    // Teletransportes (respawn, porta da cupula) movem o jogador dezenas/centenas de
+    // unidades num unico frame - sem esse snap, o lerp abaixo faria a camera "alcancar"
+    // visivelmente o jogador ao longo de varios frames em vez de acompanhar na hora.
+    if (!s_cam_smooth_y_init || std::fabs(ry - s_cam_smooth_y) > 5.0f) {
+        s_cam_smooth_y = ry;
+        s_cam_smooth_y_init = true;
+    }
+    s_cam_smooth_y = lerp(s_cam_smooth_y, ry, clamp01(g_camera_cfg.step_height_lerp));
+
     // Base do foco (player sempre centralizado).
-    Vec3 focus_base = {rpos.x, ry + 1.10f, rpos.y};
+    Vec3 focus_base = {rpos.x, s_cam_smooth_y + 1.10f, rpos.y};
 
     // Analise macro de profundidade/enclausuramento.
     float pit_factor = 0.0f;

@@ -100,6 +100,11 @@ static void on_pickup_item(Block item, float x, float z) {
         case Block::Coal:  g_unlocks.total_coal++; break;
         case Block::Copper: g_unlocks.total_copper++; break;
         case Block::Wood:  g_unlocks.total_wood++; break;
+        case Block::Ice:   g_unlocks.total_ice++; break;
+        case Block::Crystal: g_unlocks.total_crystal++; break;
+        case Block::Metal: g_unlocks.total_metal++; break;
+        case Block::Organic: g_unlocks.total_organic++; break;
+        case Block::Components: g_unlocks.total_components++; break;
         default: break;
     }
 

@@ -25,6 +25,8 @@
 #include "input.h"                // key_down/key_pressed (input extraction stage)
 #include "win32_platform.h"       // WindowProc/WinMain (win32_platform extraction stage - see there for why it declares nothing)
 #include "objectives.h"           // objectives_victory_celebration_remaining (player objectives feature)
+#include "creatures.h"            // update_creatures/render_creatures/try_craft_laser_pistol call site
+#include "audio.h"                // play_meteor_impact_sound
 
 // ===========================
 // TerraFormer 2D (prototype)
@@ -89,6 +91,15 @@ std::vector<Alert> g_alerts;
 float g_player_oxygen = 100.0f;  // 0..100 (suit O2 tank)
 float g_player_water = 100.0f;   // 0..100 (suit water tank)
 float g_player_food = 100.0f;    // 0..100 (carried food)
+
+// Integridade do traje (0..100) - dreno CONTINUO (nao timer-depois-dano como os outros
+// perigos) enquanto longe do abrigo da base. So sobe reparando na hora (tecla F, custo em
+// Metal/Components/Crystal - a MESMA carteira do upgrade de modulo, tecla R) - de proposito
+// NAO gatilhado so na base, senao viraria so mais um item da rotina de recarga que ja
+// existe la (ver "PLAYER IS AT BASE" em modules_building.cpp) e perderia a tensao real de
+// escolha (upgrade vs. reparo) minerando. Chegar a 0 nao mata na hora - so amplifica o
+// dreno de O2/agua/comida (ver suit_use_mult em modules_building.cpp/update_modules()).
+float g_suit_integrity = 100.0f;
 
 // Legacy compatibility (these map to player resources now). g_energy/g_food lost
 // "static": spawn_player_new_game() (extracted to player_physics.cpp) writes them too.
@@ -245,8 +256,6 @@ static void build_physics_test_map(World& world);
 // handling, the ui_menu extraction stage) sets it from another translation unit now - the
 // WinMain message loop and WindowProc below (still in this file) keep reading/writing it too.
 bool g_quit = false;
-static const int WORLD_WIDTH = 768;
-static const int WORLD_HEIGHT = 384;
 static constexpr float TILE_PX = 16.0f;
 
 // Sistema de zoom para melhor visibilidade
@@ -316,6 +325,10 @@ static bool g_prev_b = false;
 static bool g_prev_m = false;
 static bool g_prev_r = false;
 static bool g_prev_c = false;
+static bool g_prev_f = false; // Reparar traje (ver g_suit_integrity) - R ja e "remover waypoint" so com o mapa aberto
+static bool g_prev_g = false; // Refinar na Oficina (ver try_refine_at_workshop())
+static bool g_prev_t = false; // Scanner (ver scan_for_points_of_interest(), minimap.cpp)
+static bool g_prev_p = false; // Fabricar Pistola de Laser (ver try_craft_laser_pistol())
 
 // g_place_cd lost "static" here: building_interaction.cpp's update_mining_and_placement()
 // needs external linkage to read/write it from another translation unit - same pattern as
@@ -366,6 +379,18 @@ bool g_place_in_range = false;
 // Eventos do ceu: estrelas cadentes (camera-relative para parecer "longe" do mundo).
 std::vector<ShootingStar> g_shooting_stars;
 
+// Meteoro raro que cai de verdade no mundo (nao so um risco no ceu, como a estrela cadente
+// acima) perto do jogador, deixando um Cristal (o recurso mais raro/valioso que ja existe
+// no jogo - reaproveitado em vez de inventar um material novo) pra coletar. So 1 por vez,
+// disparado raramente (ver update_meteors() abaixo).
+struct FallingMeteor {
+    float x = 0.0f, z = 0.0f;
+    float start_y = 0.0f, target_y = 0.0f;
+    float t = 0.0f;
+    float duration = 1.6f;
+};
+static std::vector<FallingMeteor> g_meteors;
+
 // ModuleStatus enum + Module struct + g_modules moved to modules_building.h/.cpp
 // (verbatim) - same stage as above. modules_building.h (included above) supplies the
 // extern declarations this file relies on (world/minimap render, HUD, raycast placement/
@@ -397,12 +422,10 @@ std::vector<ShootingStar> g_shooting_stars;
 
 // g_day_time lost "static" here: modules_building.cpp's update_modules() (extracted from
 // this file) now reads/writes it from another translation unit - same pattern as
-// g_oxygen/g_water_res/etc. in textures.cpp. kDayLength stays static constexpr here (this
-// file's render/sky code still uses it directly); modules_building.cpp keeps its own copy
-// of the same literal value rather than sharing it via extern, since it's compile-time
-// state, not mutable - same pattern as kTempThawing in world.cpp.
+// g_oxygen/g_water_res/etc. in textures.cpp. kDayLength itself lives in game_state.h now
+// (was 6 duplicated static constexpr copies across this file/sky.cpp/lighting.cpp/
+// minimap.cpp/modules_building.cpp/ui_menu.cpp - consolidated into one shared definition).
 float g_day_time = 0.0f;
-static constexpr float kDayLength = 150.0f; // seconds
 
 static float g_stats_timer = 0.0f;
 // g_surface_dirty lost "static" here: world.cpp's terraform_step/melt_ice_around
@@ -626,12 +649,11 @@ void add_alert(const std::string& msg, float r, float g, float b, float duration
 // main.cpp's own call site: items_particles.cpp's on_pickup_item() now also calls it,
 // from another translation unit.
 
-// module_cost()/cost_string() moved to inventory_crafting.h/.cpp (verbatim) -
-// inventory_crafting.h supplies their declarations. NOTE: module_cost()/
-// get_module_cost() and cost_string()/module_cost_string() are two pre-existing,
-// similarly-named-but-different function pairs (one for the instant right-click
-// placement path, one for the build-menu/construction-queue path) - this stage
-// preserves both as-is, it does not merge them (see plan).
+// cost_string() moved to inventory_crafting.h/.cpp (verbatim) - inventory_crafting.h
+// supplies its declaration. module_cost() (the instant right-click placement path's own,
+// much cheaper cost function) was removed this session - it was a real cost exploit, not an
+// intentional second pricing tier. Both the right-click path and the build-menu/
+// construction-queue path now call get_module_cost() exclusively.
 
 // can_afford()/spend_cost()/refund_cost() moved to inventory_crafting.h/.cpp,
 // WITH the one deliberate behavior-preserving change of this stage: the three
@@ -800,18 +822,10 @@ static void render_cube_3d_tex(float x, float y, float z, float size, Tile top, 
 // GL clear color) and render_alien_sky() (render_world()'s single call site, right after).
 // update_shooting_stars() is declared there too - modules_building.cpp's update_modules()
 // keeps calling it exactly as before. Everything else stays static inside sky.cpp.
-// Renderizar plano horizontal 3D (para chao/agua)
-static void render_plane_3d(float x, float y, float z, float size, float r, float g, float b, float a = 1.0f) {
-    float half = size * 0.5f;
-    apply_frame_fog_local(x, y, z, r, g, b);
-    rlColor4f(r, g, b, a);
-    rlBegin(RL_QUADS);
-    rlVertex3f(x - half, y, z - half);
-    rlVertex3f(x + half, y, z - half);
-    rlVertex3f(x + half, y, z + half);
-    rlVertex3f(x - half, y, z + half);
-    rlEnd();
-}
+// render_plane_3d() moved to render_primitives.h/.cpp (lost "static" there) - creatures.cpp
+// needs it now for the laser-scorch ground decal (mesma tecnica ja usada aqui pra
+// chao/agua/poeira de pouso - render_cube_3d lia como "blocos flutuando", nao decal de chao,
+// ver memoria da sessao "rendering_vfx_lessons").
 
 // Renderizar plano texturizado (tile do atlas). Requer rlSetTexture(g_tex_atlas) ativo.
 static void render_plane_3d_tex(float x, float y, float z, float size, Tile tile,
@@ -1018,6 +1032,53 @@ void render_world(int win_w, int win_h) {
     rlLoadIdentity();
     apply_look_at();
 
+    // Calcular area visivel baseada na posicao do jogador (culling) - movido pra ANTES do
+    // ceu/cupula (ver logo abaixo) porque a cupula da base precisa do mesmo view_radius pra
+    // saber quando parar de se desenhar: ela era desenhada incondicionalmente (sem nenhum
+    // corte de distancia), entao a partir de uma certa distancia o terreno ao redor sumia
+    // (fora do view_radius) mas a cupula continuava aparecendo, lendo como "base flutuando
+    // no nada" (feedback do jogador).
+    Vec2 rpos = get_player_render_pos();
+    float rpy = get_player_render_y();
+    int player_tile_x = world_to_tile(rpos.x);
+    int player_tile_z = world_to_tile(rpos.y);  // Y do 2D = Z no 3D
+    // Teto de 200 fazia o horizonte parecer bem proximo assim que a camera se afastava (o
+    // mapa agora e 1536x768 - bem maior que quando esse teto foi escolhido), dando a sensacao
+    // de "parede" no fim do terreno renderizado em vez de um planeta grande pra explorar.
+    //
+    // Bonus de altitude (pedido do jogador: "quero ver muito longe quando voo, o planeta
+    // parece gigante"): sem isso, view_radius so dependia do zoom da camera (g_camera.
+    // distance) - voar bem alto de jetpack nao revelava mais terreno nenhum, so a mesma
+    // "parede" de sempre, so vista de cima. Acima de ~8 unidades do chao (o suficiente pra
+    // nao disparar em pulos normais) o raio cresce com a altitude, saturando por volta de
+    // ~68 unidades (voo alto de verdade) - o teto geral tambem sobe (340 -> 520) so pra
+    // essa faixa, o andar normal no chao continua limitado por zoom de camera como antes.
+    float altitude_above_ground = std::max(0.0f, rpy - g_player.ground_height);
+    float altitude_bonus = clamp01((altitude_above_ground - 8.0f) / 60.0f) * 260.0f;
+    // Teto de 520 (voo bem alto) causava uma queda severa de FPS - o jogador ficava "preso"
+    // subindo de jetpack porque o jogo travava, nao porque a fisica tivesse algum problema
+    // (confirmado: combustivel/velocidade continuavam corretos num teste com debug ao vivo).
+    // O loop de terreno e' por tile (nao ha frustum culling de verdade) - a area cresce com
+    // o QUADRADO do raio, entao 520 (~850mil tiles em volta do jogador) e' caro demais pra
+    // esse jeito de desenhar. Reduzido pra 380 (~450mil tiles no pior caso) - ainda bem mais
+    // longe que o teto original de 340 de antes desta sessao, so' que sustentavel.
+    int view_radius = (int)std::clamp(g_camera.distance * 3.8f + 55.0f + altitude_bonus, 110.0f, 380.0f);
+    // Paredes/objetos (4 desenhos extras por tile pras paredes, +1 pro objeto) sao a parte
+    // mais cara do loop - cortar o raio deles pra 80% do raio do terreno (em vez de igual,
+    // como ficou depois do pedido "sem pop" nesta sessao) da uma folga real de performance
+    // sem reintroduzir aquele pop visivel: em vez de um corte binario duro, os ultimos 20%
+    // do raio agora desvanecem (fade de alpha) ate sumir, ver wall_fade_alpha()/dist2 mais
+    // abaixo - "some suavemente" em vez de "aparece do nada" ao se aproximar.
+    int wall_radius = (int)((float)view_radius * 0.80f);
+    int obj_radius = wall_radius;
+    int view_radius2 = view_radius * view_radius;
+    int wall_radius2 = wall_radius * wall_radius;
+    int obj_radius2 = obj_radius * obj_radius;
+    // Zona de fade (ultimos 25% do wall_radius) - alem de wall_radius nao desenha nada
+    // (economia real); dentro da zona, o alpha cai linearmente ate 0 na borda.
+    float wall_fade_start = (float)wall_radius * 0.75f;
+    float wall_fade_start2 = wall_fade_start * wall_fade_start;
+
     float day_phase = std::fmod(g_day_time, kDayLength) / kDayLength;
     float atmos_factor = clamp01(g_atmosphere / 100.0f);
     SkyPalette sky_palette = compute_sky_palette(day_phase, atmos_factor);
@@ -1032,22 +1093,33 @@ void render_world(int win_w, int win_h) {
     rlClearScreenBuffers();
 
     // === RENDERIZAR ELEMENTOS DO CEU (sol, luas, estrelas, anel) ===
-    render_alien_sky(g_camera.position.x, g_camera.position.y, g_camera.position.z, day_phase, atmos_factor);
+    render_alien_sky(g_camera.position.x, g_camera.position.y, g_camera.position.z, g_player.ground_height, day_phase, atmos_factor);
+
+    // === CUPULA GEODESICA DA BASE (fundacao cilindrica + hemisferio, tudo decorativo - a
+    // colisao de verdade e a barreira cilindrica invisivel em player_physics.cpp, mesmo
+    // raio kDomeWallRadius) === Cor terrosa/dourada (referencia: domos de glamping no
+    // deserto que o usuario mandou), com a porta (sempre fechada, so um tom metalico +
+    // moldura na propria malha - ver render_geodesic_dome) virada pro sul, mesmo lado do
+    // gatilho de teleporte abaixo.
+    {
+        float ddx = tile_center(g_base_x) - rpos.x;
+        float ddz = tile_center(g_base_y) - rpos.y;
+        float dome_dist2 = ddx * ddx + ddz * ddz;
+        // So' desenha se o terreno ao redor da base tambem estiver dentro do view_radius -
+        // senao o terreno some (culling) mas a cupula (antes desenhada incondicionalmente)
+        // continuava aparecendo sozinha, lendo como "flutuando no nada" a distancia.
+        if (dome_dist2 <= view_radius2) {
+            const float kDoorFacing = kPi * 0.5f; // sul (+Z / +ty) - mesmo lado do gatilho de porta
+
+            float door_y = (float)g_world->height_at(g_base_x, g_base_y) * kHeightScale;
+            render_geodesic_dome({tile_center(g_base_x), door_y, tile_center(g_base_y)},
+                                  16.0f, 0.72f, 0.52f, 0.28f, 0.95f, 12, 24,
+                                  kDoorFacing, 0.20f, 2.6f, 3.2f);
+        }
+    }
 
     // === COMPUTAR LIGHTMAP 2D (RTX FAKE) ===
     compute_lightmap();
-
-    // Calcular area visivel baseada na posicao do jogador (culling)
-    Vec2 rpos = get_player_render_pos();
-    float rpy = get_player_render_y();
-    int player_tile_x = world_to_tile(rpos.x);
-    int player_tile_z = world_to_tile(rpos.y);  // Y do 2D = Z no 3D
-    int view_radius = (int)std::clamp(g_camera.distance * 3.8f + 55.0f, 110.0f, 200.0f);
-    int wall_radius = std::clamp(view_radius - 45, 80, view_radius);
-    int obj_radius = std::clamp(view_radius - 30, 90, view_radius);
-    int view_radius2 = view_radius * view_radius;
-    int wall_radius2 = wall_radius * wall_radius;
-    int obj_radius2 = obj_radius * obj_radius;
 
     // Fog de distancia por bioma para profundidade e esconder limite do mapa.
     {
@@ -1235,6 +1307,25 @@ void render_world(int win_w, int win_h) {
 
                     if (surface == Block::Water) {
                         float water_y = base_y - 0.18f + 0.05f * std::sin(g_day_time * 2.0f + world_x * 0.5f + world_z * 0.3f);
+
+                        // Brilho de sol na agua ("sun glint") - flash breve e aditivo em
+                        // tiles aleatorios (determinístico por tile, varia com o tempo real -
+                        // g_day_time - entao pisca de verdade em vez de ficar parado). So
+                        // visivel de dia (compute_daylight), mais forte perto do meio-dia.
+                        float sparkle_seed = std::sin(world_x * 12.9898f + world_z * 78.233f) * 43758.5453f;
+                        sparkle_seed -= std::floor(sparkle_seed);
+                        float sparkle_wave = std::sin(g_day_time * (0.6f + sparkle_seed * 0.8f) + sparkle_seed * 37.0f);
+                        float daylight_now = compute_daylight(day_phase);
+                        if (sparkle_wave > 0.985f && daylight_now > 0.05f) {
+                            float sparkle_t = (sparkle_wave - 0.985f) / 0.015f;
+                            rlSetTexture(0);
+                            rlSetBlendMode(RL_BLEND_ADDITIVE);
+                            render_plane_3d(world_x, water_y + 0.01f, world_z, 0.55f, 1.0f, 1.0f, 0.95f,
+                                            sparkle_t * 0.6f * daylight_now);
+                            if (use_textures) rlSetTexture(g_tex_atlas);
+                            rlSetBlendMode(RL_BLEND_ALPHA);
+                        }
+
                         if (use_textures) render_plane_3d_tex(world_x, water_y, world_z, 1.0f, gtex.top, tint_r, tint_g, tint_b, a);
                         else render_plane_3d(world_x, water_y, world_z, 1.0f, tint_r, tint_g, tint_b, 0.75f);
                     } else {
@@ -1249,19 +1340,28 @@ void render_world(int win_w, int win_h) {
                         float max_drop = std::max(std::max(h_here - h_e, h_here - h_w), std::max(h_here - h_s, h_here - h_n));
                         if (max_drop > 1.40f) do_walls = true; // manter grandes penhascos visiveis ao longe
                     }
+                    // Desvanece (nao corta de repente) nos ultimos 25% do wall_radius - ver
+                    // comentario em wall_fade_start acima. Penhascos grandes (max_drop>1.40,
+                    // mantidos vivos alem do raio normal) ficam sempre 100% opacos, de proposito
+                    // - sao poucos e ja eram uma excecao deliberada antes desta mudanca.
+                    float wall_a = a;
+                    if (do_walls && dist2 > wall_fade_start2 && dist2 <= wall_radius2) {
+                        float fade_span = std::max(1.0f, (float)(wall_radius2 - (int)wall_fade_start2));
+                        wall_a *= clamp01(1.0f - (float)(dist2 - (int)wall_fade_start2) / fade_span);
+                    }
 
                     if (do_walls) {
                         if (use_textures) {
-                            if (h_e < h_here) render_wall_3d_tex(WallFace::XPos, world_x, world_z, h_e, h_here, gtex.side, tint_r, tint_g, tint_b, a, side_shade);
-                            if (h_w < h_here) render_wall_3d_tex(WallFace::XNeg, world_x, world_z, h_w, h_here, gtex.side, tint_r, tint_g, tint_b, a, dark_shade);
-                            if (h_s < h_here) render_wall_3d_tex(WallFace::ZPos, world_x, world_z, h_s, h_here, gtex.side, tint_r, tint_g, tint_b, a, side_shade);
-                            if (h_n < h_here) render_wall_3d_tex(WallFace::ZNeg, world_x, world_z, h_n, h_here, gtex.side, tint_r, tint_g, tint_b, a, dark_shade);
+                            if (h_e < h_here) render_wall_3d_tex(WallFace::XPos, world_x, world_z, h_e, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, side_shade);
+                            if (h_w < h_here) render_wall_3d_tex(WallFace::XNeg, world_x, world_z, h_w, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, dark_shade);
+                            if (h_s < h_here) render_wall_3d_tex(WallFace::ZPos, world_x, world_z, h_s, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, side_shade);
+                            if (h_n < h_here) render_wall_3d_tex(WallFace::ZNeg, world_x, world_z, h_n, h_here, gtex.side, tint_r, tint_g, tint_b, wall_a, dark_shade);
                         } else {
                             // Fallback sem texturas: quads coloridos
                             auto wall_col = [&](float s) {
                                 float wr = tint_r * s, wg = tint_g * s, wb = tint_b * s;
                                 apply_frame_fog_local(world_x, (h_here) , world_z, wr, wg, wb);
-                                rlColor4f(wr, wg, wb, a);
+                                rlColor4f(wr, wg, wb, wall_a);
                             };
                             constexpr float half = 0.5f;
                             if (h_e < h_here) {
@@ -1471,6 +1571,33 @@ void render_world(int win_w, int win_h) {
         rlSetTexture(0);
     }
 
+    // Meteoro raro caindo (ver update_meteors/FallingMeteor) - cubo incandescente
+    // interpolando do alto do ceu ate o chao, agora com rastro/entrada atmosferica (antes
+    // era so um cubo "teleportando" sem sensacao nenhuma de movimento/velocidade).
+    for (const auto& m : g_meteors) {
+        float u = clamp01(m.t / m.duration);
+        float y = lerp(m.start_y, m.target_y, u);
+        float glow = 0.85f + 0.15f * std::sin(m.t * 20.0f);
+
+        // Rastro incandescente (posicao um pouco atras, pela mesma trajetoria) + halo
+        // aditivo ao redor do nucleo - da sensacao real de entrada atmosferica em alta
+        // velocidade, nao um cubo teleportando de posicao em posicao.
+        float trail_u = clamp01(u - 0.06f);
+        float trail_y = lerp(m.start_y, m.target_y, trail_u);
+        rlSetTexture(0);
+        rlSetBlendMode(RL_BLEND_ADDITIVE);
+        rlDisableDepthMask();
+        render_beam_3d({m.x, trail_y, m.z}, {m.x, y, m.z}, 0.30f, 1.0f, 0.55f, 0.15f, 0.55f);
+        render_glow_disc_3d({m.x, y, m.z}, 0.70f, 1.0f, 0.62f, 0.22f, 0.45f, 12);
+        rlEnableDepthMask();
+        rlSetBlendMode(RL_BLEND_ALPHA);
+
+        render_cube_3d(m.x, y, m.z, 0.55f, 1.0f * glow, 0.55f * glow, 0.15f * glow, 1.0f, true);
+    }
+
+    // Criaturas alienigenas perambulantes (ver update_creatures/render_creatures, creatures.cpp).
+    render_creatures();
+
     // === RENDERIZAR PLAYER 3D (Estilo Minicraft - Blocky) ===
     {
         float px = rpos.x;
@@ -1522,11 +1649,11 @@ void render_world(int win_w, int win_h) {
         float breath = std::sin(g_player.anim_frame * g_player_visual_cfg.breathing_speed) * g_player_visual_cfg.breathing_amp;
         float idle_sway = std::sin(g_player.anim_frame * g_player_visual_cfg.idle_sway_speed) * g_player_visual_cfg.idle_sway_amp;
         float walk_wave = std::sin(g_player.walk_timer * g_player_visual_cfg.walk_bob_speed);
-        float walk_bob = g_player.is_moving ? walk_wave * g_player_visual_cfg.walk_bob_amp : 0.0f;
-        float walk_weight = g_player.is_moving ? std::fabs(std::sin(g_player.walk_timer * 0.5f * g_player_visual_cfg.walk_bob_speed)) * g_player_visual_cfg.walk_weight_amp : 0.0f;
+        float walk_bob = walk_wave * g_player_visual_cfg.walk_bob_amp * g_player.walk_blend;
+        float walk_weight = std::fabs(std::sin(g_player.walk_timer * 0.5f * g_player_visual_cfg.walk_bob_speed)) * g_player_visual_cfg.walk_weight_amp * g_player.walk_blend;
         float mine_impact = g_player.is_mining ? g_player.mine_anim : 0.0f;
         float bob = breath + walk_bob - walk_weight - mine_impact * 0.06f;
-        float leg_swing = g_player.is_moving ? walk_wave * 0.12f : 0.0f;
+        float leg_swing = walk_wave * 0.12f * g_player.walk_blend;
 
         float suit_r = 0.92f - wear * 0.12f - dirt * 0.16f - damage * 0.18f + frost * 0.12f;
         float suit_g = 0.93f - wear * 0.11f - dirt * 0.14f - damage * 0.17f + frost * 0.12f;
@@ -1540,40 +1667,167 @@ void render_world(int win_w, int win_h) {
             float pack_dist = 0.25f;
             float flame_x = px - sin_rot * pack_dist;
             float flame_z = pz - cos_rot * pack_dist;
-            
+
+            // Rajada de pouso: chama bem maior/mais intensa e mais branca (nucleo mais
+            // quente) que o voo manual normal, pra deixar visivel que esta freando de
+            // verdade (pedido do jogador) - mais camadas tambem, nao so maior.
+            bool braking = g_player.landing_assist_active;
+            float flame_boost = braking ? 2.0f : 1.0f;
+
             // Animacao da chama (flicker)
-            float flame_flicker = 0.8f + 0.4f * std::sin(g_player.jetpack_flame_anim * 2.0f);
-            float flame_size = 0.15f + 0.05f * std::sin(g_player.jetpack_flame_anim * 3.0f);
-            
-            // Chama principal (laranja/amarela)
-            for (int i = 0; i < 3; ++i) {
+            float flame_flicker = (0.8f + 0.4f * std::sin(g_player.jetpack_flame_anim * 2.0f)) * flame_boost;
+            float flame_size = (0.15f + 0.05f * std::sin(g_player.jetpack_flame_anim * 3.0f)) * flame_boost;
+
+            // Glow aditivo por baixo da chama (disco billboard, ver render_glow_disc_3d
+            // adicionado nesta sessao pro flash da pistola/meteoro) - da uma luz/brilho de
+            // verdade ao redor da chama em vez de so cubos solidos empilhados.
+            rlSetTexture(0);
+            rlSetBlendMode(RL_BLEND_ADDITIVE);
+            rlDisableDepthMask();
+            render_glow_disc_3d({flame_x, py + 0.02f, flame_z}, flame_size * (braking ? 2.2f : 1.6f),
+                                 1.0f, braking ? 0.75f : 0.55f, 0.15f, 0.55f * flame_flicker, 10);
+            rlEnableDepthMask();
+            rlSetBlendMode(RL_BLEND_ALPHA);
+
+            int flame_layers = braking ? 4 : 3;
+            // Chama principal (laranja/amarela, quase branca no nucleo quando freando)
+            for (int i = 0; i < flame_layers; ++i) {
                 float flame_y = py + 0.10f - i * 0.15f;
-                float size = flame_size * (1.0f - i * 0.25f);
-                float intensity = flame_flicker * (1.0f - i * 0.2f);
-                
-                // Nucleo amarelo
-                render_cube_3d(flame_x, flame_y, flame_z, size * 0.6f, 
-                    1.0f * intensity, 0.95f * intensity, 0.3f * intensity, 0.95f, false);
+                float size = flame_size * (1.0f - i * 0.2f);
+                float intensity = flame_flicker * (1.0f - i * 0.18f);
+
+                // Nucleo (branco-amarelado na rajada, so amarelo no voo normal)
+                render_cube_3d(flame_x, flame_y, flame_z, size * 0.6f,
+                    1.0f * intensity, (braking ? 0.98f : 0.95f) * intensity, (braking ? 0.70f : 0.3f) * intensity,
+                    0.95f, false);
                 // Chama laranja
-                render_cube_3d(flame_x, flame_y - 0.08f, flame_z, size * 0.8f, 
+                render_cube_3d(flame_x, flame_y - 0.08f, flame_z, size * 0.8f,
                     1.0f * intensity, 0.55f * intensity, 0.1f * intensity, 0.85f, false);
                 // Borda vermelha
-                render_cube_3d(flame_x, flame_y - 0.15f, flame_z, size, 
+                render_cube_3d(flame_x, flame_y - 0.15f, flame_z, size,
                     0.95f * intensity, 0.25f * intensity, 0.05f * intensity, 0.7f, false);
             }
-            
-            // Particulas de fogo (pequenos cubos caindo)
-            for (int i = 0; i < 4; ++i) {
-                float particle_offset = std::sin(g_player.jetpack_flame_anim * 5.0f + i * 1.5f) * 0.08f;
+
+            // Particulas de fogo (pequenos cubos caindo) - mais e maiores na rajada
+            int fire_particles = braking ? 8 : 4;
+            for (int i = 0; i < fire_particles; ++i) {
+                float particle_offset = std::sin(g_player.jetpack_flame_anim * 5.0f + i * 1.5f) * 0.08f * flame_boost;
                 float particle_y = py - 0.1f - std::fmod(g_player.jetpack_flame_anim * 0.5f + i * 0.25f, 0.5f);
                 float alpha = 0.8f - std::fmod(g_player.jetpack_flame_anim * 0.5f + i * 0.25f, 0.5f) * 1.5f;
                 if (alpha > 0.0f) {
-                    render_cube_3d(flame_x + particle_offset, particle_y, flame_z + particle_offset * 0.5f, 
-                        0.06f, 1.0f, 0.6f, 0.1f, alpha, false);
+                    render_cube_3d(flame_x + particle_offset, particle_y, flame_z + particle_offset * 0.5f,
+                        0.06f * flame_boost, 1.0f, 0.6f, 0.1f, alpha, false);
                 }
             }
         }
         
+        // === ONDA DE CHOQUE DE POUSO (ver g_physics.landing_dust_timer/landing_dust_pos,
+        // disparado em apply_single_physics_step quando a rajada instantanea liga).
+        // Layout novo (2a reformulacao - nem cor nem "nuvem espalhada" de cubos convenceu):
+        // um disco/anel de fragmentos ACHATADOS (render_plane_3d - planos sem altura
+        // nenhuma, nao cubos) rente ao chao, que se expande rapido pra fora feito uma onda
+        // de impacto, com o miolo preenchido (senao vira uma rosquinha vazia por dentro).
+        // Fumaca so um resto discreto subindo (poucos fios, pouca altura) - o foco e a
+        // onda no chao, nao algo subindo, matching "poeira baixa e larga, sem nada subindo
+        // muito" (layout pedido pelo usuario).
+        if (g_physics.landing_dust_timer > 0.0f) {
+            constexpr float kLandingDustDuration = 1.1f; // deve bater com player_physics.cpp
+            float t = 1.0f - clamp01(g_physics.landing_dust_timer / kLandingDustDuration);
+            Vec3 base = g_physics.landing_dust_pos;
+
+            // Hash pseudo-aleatorio deterministico (mesmo indice sempre da o mesmo valor -
+            // aleatoriedade de verdade piscaria frame a frame).
+            auto hash01 = [](int i, float salt) -> float {
+                float x = std::sin((float)i * 12.9898f + salt * 78.233f) * 43758.5453f;
+                return x - std::floor(x);
+            };
+
+            // Escala pelo tamanho da queda (ver g_physics.landing_dust_intensity,
+            // calculado em apply_single_physics_step a partir da velocidade de impacto no
+            // instante da rajada) - um pulo pequeno da so um respingo, uma queda de
+            // verdade da uma onda bem maior. Piso de 0.55 (nao 0, ja que a intensidade
+            // crua ja tem piso 0.25) pra um pulo pequeno ainda deixar algo visivel.
+            float scale = 0.55f + 0.45f * g_physics.landing_dust_intensity;
+
+            // --- Anel da onda: se expande rapido (kWaveLife curto) e some - o "estouro"
+            // do impacto, nao uma nuvem persistente. ---
+            const float kWaveLife = 0.45f;
+            float wave_t = clamp01(t / kWaveLife);
+            if (wave_t < 1.0f) {
+                float wave_radius = (0.20f + wave_t * 2.3f) * scale;
+                float wave_alpha = (1.0f - wave_t) * 0.90f;
+                float wave_y = base.y + 0.02f; // colado no chao
+                const int kWaveChunks = 20;
+                for (int i = 0; i < kWaveChunks; ++i) {
+                    float ang = ((float)i / (float)kWaveChunks) * 6.2831853f + hash01(i, 1.0f) * 0.35f;
+                    float r = wave_radius * (0.85f + hash01(i, 2.0f) * 0.30f);
+                    float dx = std::cos(ang) * r;
+                    float dz = std::sin(ang) * r;
+                    float size = (0.22f + hash01(i, 3.0f) * 0.18f) * (1.0f - wave_t * 0.3f) * scale;
+                    float shade = 0.74f + hash01(i, 4.0f) * 0.18f;
+                    render_plane_3d(base.x + dx, wave_y, base.z + dz, size,
+                        shade, shade * 0.60f, shade * 0.36f, wave_alpha);
+                }
+            }
+
+            // --- Fumaca branca se espalhando JUNTO com a onda (nao so subindo parada no
+            // lugar) - mesma ideia da onda de poeira, um pouco mais alta/mais lenta pra
+            // durar um tico mais e ler como fumaca por cima da poeira, nao afogada nela. ---
+            const float kSmokeWaveLife = kWaveLife * 1.7f;
+            float smoke_wave_t = clamp01(t / kSmokeWaveLife);
+            if (smoke_wave_t < 1.0f) {
+                float smoke_wave_radius = (0.15f + smoke_wave_t * 1.9f) * scale;
+                float smoke_wave_alpha = (1.0f - smoke_wave_t) * 0.55f;
+                const int kSmokeWaveChunks = 16;
+                for (int i = 0; i < kSmokeWaveChunks; ++i) {
+                    float ang = ((float)i / (float)kSmokeWaveChunks) * 6.2831853f + hash01(i, 30.0f) * 0.4f;
+                    float r = smoke_wave_radius * (0.7f + hash01(i, 31.0f) * 0.45f);
+                    float dx = std::cos(ang) * r;
+                    float dz = std::sin(ang) * r;
+                    float smoke_wave_y = base.y + 0.06f + smoke_wave_t * 0.30f; // sobe um pouco enquanto se espalha
+                    float size = (0.24f + hash01(i, 32.0f) * 0.18f) * (0.7f + smoke_wave_t * 0.5f) * scale;
+                    float shade = 0.92f + hash01(i, 33.0f) * 0.08f;
+                    render_cube_3d(base.x + dx, smoke_wave_y, base.z + dz, size,
+                        shade, shade, shade, smoke_wave_alpha, false);
+                }
+            }
+
+            // --- Miolo: poeira baixa preenchendo o centro por um pouco mais de tempo, pra
+            // nao sobrar um buraco vazio dentro do anel enquanto ele se expande/some. ---
+            float core_t = clamp01(t / 0.75f);
+            float core_alpha = (1.0f - core_t) * 0.55f;
+            const int kCorePuffs = 12;
+            for (int i = 0; i < kCorePuffs; ++i) {
+                float ang = hash01(i, 5.0f) * 6.2831853f;
+                float r = hash01(i, 6.0f) * (0.25f + core_t * 1.0f) * scale;
+                float dx = std::cos(ang) * r;
+                float dz = std::sin(ang) * r;
+                float size = (0.20f + hash01(i, 7.0f) * 0.14f) * scale;
+                float shade = 0.70f + hash01(i, 8.0f) * 0.16f;
+                render_plane_3d(base.x + dx, base.y + 0.015f, base.z + dz, size,
+                    shade, shade * 0.58f, shade * 0.34f, core_alpha);
+            }
+
+            // --- Fumaca: poucos fios discretos subindo pouco - resto secundario, nao o
+            // foco (o foco e a onda no chao). ---
+            const int kSmokeWisps = 4;
+            for (int i = 0; i < kSmokeWisps; ++i) {
+                float phase = hash01(i, 20.0f) * 0.3f;
+                float local_t = clamp01((t - phase) / (1.0f - phase));
+                if (local_t <= 0.0f) continue;
+                float ang = hash01(i, 21.0f) * 6.2831853f;
+                float r = (0.15f + local_t * 0.40f) * scale;
+                float dx = std::cos(ang) * r;
+                float dz = std::sin(ang) * r;
+                float smoke_y = base.y + 0.15f + local_t * 0.55f; // sobe pouco de proposito
+                float smoke_size = (0.14f + local_t * 0.16f) * scale;
+                float smoke_shade = 0.92f + hash01(i, 22.0f) * 0.08f;
+                float smoke_alpha = (1.0f - local_t) * (1.0f - local_t) * 0.55f;
+                render_cube_3d(base.x + dx, smoke_y, base.z + dz,
+                    smoke_size, smoke_shade, smoke_shade, smoke_shade, smoke_alpha, false);
+            }
+        }
+
         // === CORPO (Bloco principal - torso branco do astronauta) ===
         render_cube_3d(px, py + 0.30f + bob, pz, 0.45f, suit_r, suit_g, suit_b, 1.0f, true);
         
@@ -1654,6 +1908,27 @@ void render_world(int win_w, int win_h) {
         float ra_z = pz + perp_z * arm_sep;
         render_cube_3d(ra_x, py + 0.25f + bob + arm_bob + mine_impact * 0.05f, ra_z, 0.15f, suit_r * 0.96f, suit_g * 0.96f, suit_b, 1.0f, true);
 
+        // === PISTOLA DE LASER (segurada na mao direita, so' quando equipada) ===
+        // render_cube_3d so' desenha cubos uniformes (sem caixa alongada) - o "cano" e'
+        // aproximado por 2 cubos pequenos empilhados na direcao que o jogador olha (sin_rot/
+        // cos_rot, mesma tecnica ja usada pro deslocamento da lanterna/antena acima), nao uma
+        // unica caixa esticada. Mesmo estilo "Minicraft" do resto do corpo.
+        if (g_selected == Block::LaserPistol) {
+            float gun_y = py + 0.25f + bob + arm_bob + mine_impact * 0.05f;
+            float grip_x = ra_x + sin_rot * 0.06f;
+            float grip_z = ra_z + cos_rot * 0.06f;
+            render_cube_3d(grip_x, gun_y, grip_z, 0.11f, 0.18f, 0.19f, 0.22f, 1.0f, true);
+
+            float barrel1_x = ra_x + sin_rot * 0.20f;
+            float barrel1_z = ra_z + cos_rot * 0.20f;
+            render_cube_3d(barrel1_x, gun_y + 0.03f, barrel1_z, 0.09f, 0.20f, 0.85f, 0.95f, 1.0f, true);
+
+            float barrel2_x = ra_x + sin_rot * 0.32f;
+            float barrel2_z = ra_z + cos_rot * 0.32f;
+            float tip_glow = 0.65f + 0.35f * std::sin(g_player.anim_frame * 6.0f);
+            render_cube_3d(barrel2_x, gun_y + 0.03f, barrel2_z, 0.07f,
+                          0.35f * tip_glow, 0.90f * tip_glow, 1.0f * tip_glow, 1.0f, false);
+        }
     }
 
     if (g_debug && DEBUG_DRAW_COLLISIONS) {
@@ -1904,7 +2179,19 @@ void render_world(int win_w, int win_h) {
         draw_text(win_w * 0.5f - estimate_text_w_px(t1) * 0.5f, win_h * 0.20f, t1, 0.85f, 0.95f, 0.85f, 0.98f * alpha);
         draw_text(win_w * 0.5f - estimate_text_w_px(t2) * 0.5f, win_h * 0.20f + 26.0f, t2, 0.80f, 0.90f, 0.80f, 0.90f * alpha);
     }
-    
+
+    // Overlay de "Legado Completo!" (mesmo padrao do overlay de vitoria acima, so pro
+    // trilho de legado pos-vitoria - ver objectives.h/.cpp).
+    float legacy_celebration = objectives_legacy_celebration_remaining();
+    if (legacy_celebration > 0.0f) {
+        float alpha = std::min(1.0f, legacy_celebration / 2.0f);
+        render_quad(0.0f, 0.0f, (float)win_w, (float)win_h, 0.0f, 0.0f, 0.0f, 0.30f * alpha);
+        std::string t1 = "Legado Completo!";
+        std::string t2 = "A colonia prospera muito alem da terraformacao.";
+        draw_text(win_w * 0.5f - estimate_text_w_px(t1) * 0.5f, win_h * 0.20f, t1, 0.95f, 0.85f, 0.35f, 0.98f * alpha);
+        draw_text(win_w * 0.5f - estimate_text_w_px(t2) * 0.5f, win_h * 0.20f + 26.0f, t2, 0.90f, 0.80f, 0.35f, 0.90f * alpha);
+    }
+
     // ============= BUILD MENU =============
     // Extracted verbatim to building_interaction.cpp's render_build_menu() - see
     // building_interaction.h for details. The guard that used to wrap this block
@@ -1954,6 +2241,87 @@ void render_world(int win_w, int win_h) {
 // themselves, since they are the two intentional final orchestrators left in this file,
 // not a reusable module) - same pattern as every other "lost static" function in this
 // codebase's extraction stages.
+// Meteoro raro com recurso coletavel - ver struct FallingMeteor acima. So 1 ativo por vez;
+// dispara num intervalo aleatorio bem longo (5-15 minutos), caindo perto (nao em cima) do
+// jogador. Ao pousar, larga um Cristal coletavel (ver spawn_item_drop) e um estouro de
+// particulas (spawn_block_particles, ja usado pra minerar) marcando o local.
+static void update_meteors(float dt) {
+    static float meteor_timer = 0.0f;
+    static float meteor_next = 60.0f + rng_next_f01() * 120.0f;
+
+    if (g_meteors.empty() && g_world) {
+        meteor_timer += dt;
+        if (meteor_timer >= meteor_next) {
+            meteor_timer = 0.0f;
+            meteor_next = 60.0f + rng_next_f01() * 120.0f;
+
+            // Cai dentro do campo de visao atual da camera (pedido do jogador: "deve cair
+            // quando o jogador estiver olhando") em vez de um angulo 360 totalmente aleatorio
+            // - sem isso, o meteoro caia e sumia com boa chance de estar fora da tela inteira.
+            // rad_yaw segue a mesma convencao de update_camera_position() (camera.cpp):
+            // forward = -sin(yaw), -cos(yaw) no plano XZ.
+            float rad_yaw = g_camera.yaw * (kPi / 180.0f);
+            float forward_ang = std::atan2(-std::cos(rad_yaw), -std::sin(rad_yaw));
+            constexpr float kMeteorViewConeRad = 50.0f * (kPi / 180.0f); // bem dentro do FOV (74 graus)
+            float ang = forward_ang + (rng_next_f01() - 0.5f) * kMeteorViewConeRad;
+            float dist = 15.0f + rng_next_f01() * 15.0f;
+            int tx = world_to_tile(g_player.pos.x + std::cos(ang) * dist);
+            int tz = world_to_tile(g_player.pos.y + std::sin(ang) * dist);
+            if (g_world->in_bounds(tx, tz)) {
+                FallingMeteor m;
+                m.x = tile_center(tx);
+                m.z = tile_center(tz);
+                m.target_y = surface_height_at(*g_world, tx, tz);
+                m.start_y = m.target_y + 90.0f;
+                g_meteors.push_back(m);
+            }
+        }
+    }
+
+    for (auto it = g_meteors.begin(); it != g_meteors.end();) {
+        it->t += dt;
+        if (it->t >= it->duration) {
+            // Cratera de impacto de verdade - antes so' soltava o cristal, sem deformar o
+            // terreno nenhum (feedback do jogador: "nem fez uma cratera"). Mesma conversao
+            // unidade-de-mundo -> unidade-de-heightmap ja usada pela mineracao
+            // (building_interaction.cpp), so' aplicada num raio ao redor do impacto em vez
+            // de 1 tile so', com o fundo mais fundo no centro (falloff quadratico).
+            int ix = world_to_tile(it->x);
+            int iz = world_to_tile(it->z);
+            if (g_world->in_bounds(ix, iz)) {
+                constexpr float kCraterRadius = 3.2f;
+                constexpr float kCraterDepthWorldUnits = 2.2f;
+                int dig_units_max = std::max(1, (int)std::lround(kCraterDepthWorldUnits / std::max(0.01f, kHeightScale)));
+                int crater_r = (int)kCraterRadius + 1;
+                for (int cz = iz - crater_r; cz <= iz + crater_r; ++cz) {
+                    for (int cx = ix - crater_r; cx <= ix + crater_r; ++cx) {
+                        if (!g_world->in_bounds(cx, cz)) continue;
+                        float ddx = (float)(cx - ix), ddz = (float)(cz - iz);
+                        float dist = std::sqrt(ddx * ddx + ddz * ddz);
+                        if (dist > kCraterRadius) continue;
+                        float falloff = 1.0f - (dist / kCraterRadius);
+                        falloff *= falloff;
+                        int dig = (int)std::lround((float)dig_units_max * falloff);
+                        if (dig <= 0) continue;
+                        int16_t ch = g_world->height_at(cx, cz);
+                        int nh = std::max(0, (int)ch - dig);
+                        g_world->set_height(cx, cz, (int16_t)nh);
+                    }
+                }
+                g_surface_dirty = true;
+            }
+
+            spawn_item_drop(Block::Crystal, it->x, it->z, it->target_y + 0.3f);
+            spawn_block_particles(Block::Crystal, it->x, it->z, g_world->h);
+            play_meteor_impact_sound();
+            set_toast("Um meteoro caiu por perto! Cristal raro pra coletar.", 3.5f);
+            it = g_meteors.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void update_game(float dt) {
     if (!g_world) return;
 
@@ -1980,7 +2348,7 @@ void update_game(float dt) {
     update_onboarding(dt);
     
     // Atualizar fog of war do minimapa
-    update_fog_of_war();
+    update_fog_of_war(dt);
 
     // Stats timer (periodically recompute terraform score)
     g_stats_timer += dt;
@@ -2006,6 +2374,10 @@ void update_game(float dt) {
     bool m_pressed = key_pressed(KEY_M, g_prev_m);
     bool r_pressed = key_pressed(KEY_R, g_prev_r);
     bool c_key_pressed = key_pressed(KEY_C, g_prev_c);
+    bool f_pressed = key_pressed(KEY_F, g_prev_f);
+    bool g_pressed = key_pressed(KEY_G, g_prev_g);
+    bool t_pressed = key_pressed(KEY_T, g_prev_t);
+    bool p_pressed = key_pressed(KEY_P, g_prev_p);
     
     // === MAPA GRANDE (tecla M) ===
     if (m_pressed && g_state == GameState::Playing) {
@@ -2228,6 +2600,7 @@ void update_game(float dt) {
     bool jump_pressed = jump_held && !g_physics.jump_was_held;
     bool jump_released = !jump_held && g_physics.jump_was_held;
     g_physics.jump_was_held = jump_held;
+    bool descend_held = key_down(KEY_LEFT_CONTROL) || key_down(KEY_RIGHT_CONTROL);
 
     PlayerPhysicsInput physics_input{};
     physics_input.move = move_world;
@@ -2236,7 +2609,12 @@ void update_game(float dt) {
     physics_input.jump_pressed = jump_pressed;
     physics_input.jump_held = jump_held;
     physics_input.jump_released = jump_released;
+    physics_input.descend_held = descend_held;
     step_player_physics(physics_input, dt);
+
+    // Poeira da rajada de pouso (ver g_physics.landing_dust_timer, player_physics.h) -
+    // contagem regressiva por frame; render_world() desenha enquanto > 0.
+    g_physics.landing_dust_timer = std::max(0.0f, g_physics.landing_dust_timer - dt);
 
     if (key_down(KEY_KP_ADD) || key_down(KEY_EQUAL)) {
         g_camera.distance = std::max(g_camera.min_distance, g_camera.distance - 10.0f * dt);
@@ -2249,33 +2627,112 @@ void update_game(float dt) {
     g_player.is_moving = vec2_length(g_player.vel) > 0.15f;
     if (g_player.is_moving) g_player.walk_timer += dt * (run_key ? 1.5f : 1.0f);
     else g_player.walk_timer *= 0.9f;
-    
+
+    // walk_blend: 1 so' quando ha' input de movimento ativo, nao apenas velocidade residual -
+    // deslizando no gelo (soltou o movimento, corpo ainda escorregando por inercia) precisa
+    // parecer deslizar de pe' parado, nao continuar o ciclo de passada. Suavizado (nao um
+    // corte seco) pra nao "travar" as pernas de repente ao soltar o movimento.
+    float walk_blend_target = (has_input && g_player.is_moving) ? 1.0f : 0.0f;
+    float walk_blend_rate = 9.0f * dt;
+    if (g_player.walk_blend < walk_blend_target) g_player.walk_blend = std::min(walk_blend_target, g_player.walk_blend + walk_blend_rate);
+    else g_player.walk_blend = std::max(walk_blend_target, g_player.walk_blend - walk_blend_rate);
+
+    update_meteors(dt);
+    update_creatures(dt);
+
     // === SURVIVAL MECHANICS ===
     // Astronaut dies from: no oxygen OR no water (after 30 seconds without)
     static float dehydration_timer = 0.0f;  // Time without water
     static float suffocation_timer = 0.0f;  // Time without oxygen
     static float damage_tick = 0.0f;
-    
+
     const float kDamageDelay = 15.0f;  // 15 seconds before damage starts (was 30s)
-    
+    // NOTA: frio extremo NAO mata mais o jogador (removido a pedido do usuario - "ele tem
+    // roupa de astronauta, isso nao deveria ocorrer... deveria morrer de sede ou falta de
+    // oxigenio, mas nao de frio"). O traje ja e um sistema termicamente selado por premissa
+    // do jogo; g_temperature continua existindo (mostrado no HUD, usado pela Fabrica de CO2
+    // e pela progressao de fases), so nao causa mais dano/morte por si so. A degradacao do
+    // traje (g_suit_integrity, ver comentario completo no topo do arquivo) e o unico jeito
+    // de ficar mais vulneravel longe da base hoje - isso sim amplifica sede/fome/oxigenio.
+    float dx_base = g_player.pos.x - (float)g_base_x;
+    float dy_base = g_player.pos.y - (float)g_base_y;
+    bool near_base_shelter = (dx_base * dx_base + dy_base * dy_base) < (g_base_cfg.safe_radius * g_base_cfg.safe_radius);
+
+    // Integridade do traje: dreno CONTINUO (nao timer-depois-dano) enquanto fora do abrigo -
+    // ~2.5/min, ~40min pra zerar ficando fora o tempo todo (decadencia lenta de proposito).
+    // So sobe reparando na hora (tecla F, mais abaixo apos update_mining_and_placement) - ver
+    // comentario completo em g_suit_integrity (topo do arquivo).
+    const float kSuitDecayPerMin = 2.5f;
+    if (!near_base_shelter) {
+        g_suit_integrity = std::max(0.0f, g_suit_integrity - kSuitDecayPerMin / 60.0f * dt);
+    }
+
+    // Porta da cupula (sempre fechada - ver render_geodesic_dome): cruzar a parede da base
+    // agora e por proximidade (nao mais tecla F), mas o unico jeito de atravessar e este
+    // teleporte curto, disparado so ao ENCOSTAR na porta (raio 1.0 - bem mais apertado que
+    // antes - E perto do CHAO, dentro da altura da porta). 4 pontos distintos ao longo do
+    // eixo sul (a parede fica no raio 15.5, porta em cy+16): de dentro pra fora,
+    // kInsideFar(9) < kInsideTrigger(13) < [parede ~16] < kOutsideTrigger(19) <
+    // kOutsideFar(23). Cada gatilho pousa o jogador no ponto "Far" do OUTRO lado (nunca no
+    // proprio gatilho de origem nem no da chegada) - essa distancia evita redisparar o
+    // teleporte na hora ao chegar do outro lado.
+    //
+    // A checagem de ALTURA (pos_y perto do chao) e o que faltava antes: o gatilho so olhava
+    // pra distancia horizontal, entao voar de jetpack BEM ALTO passando por cima do ponto da
+    // porta tambem disparava o teleporte (parecia "voar pra fora da cupula", bug reportado) -
+    // a barreira cilindrica em si (player_physics.cpp) e valida em qualquer altura, mas o
+    // GATILHO da porta nao era, e um gatilho disparando na hora errada e igualzinho a nao ter
+    // barreira nenhuma. Com a altura exigida, so andar (ou pousar) bem perto do chao na porta
+    // ativa o teleporte - passar voando por cima, em qualquer altura, so esbarra na barreira.
+    {
+        static float teleport_cooldown = 0.0f;
+        teleport_cooldown = std::max(0.0f, teleport_cooldown - dt);
+
+        const int kInsideFar = 9;
+        const int kInsideTrigger = 13;
+        const int kOutsideTrigger = 19;
+        const int kOutsideFar = 23;
+        const float kDoorTriggerRadius2 = 1.0f * 1.0f;
+        const float kDoorHeightTolerance = 2.8f; // ~door_height (2.6) + folga pequena
+
+        float door_ground_y = (float)g_world->height_at(g_base_x, g_base_y) * kHeightScale;
+        bool near_door_height = std::fabs(g_player.pos_y - door_ground_y) < kDoorHeightTolerance;
+
+        float in_dx = g_player.pos.x - (float)g_base_x;
+        float in_dy = g_player.pos.y - (float)(g_base_y + kInsideTrigger);
+        float out_dx = g_player.pos.x - (float)g_base_x;
+        float out_dy = g_player.pos.y - (float)(g_base_y + kOutsideTrigger);
+        bool near_inside_trigger = near_door_height && (in_dx * in_dx + in_dy * in_dy) < kDoorTriggerRadius2;
+        bool near_outside_trigger = near_door_height && (out_dx * out_dx + out_dy * out_dy) < kDoorTriggerRadius2;
+
+        if (teleport_cooldown <= 0.0f && (near_inside_trigger || near_outside_trigger)) {
+            if (near_inside_trigger) {
+                teleport_player_to(g_base_x, g_base_y + kOutsideFar);
+            } else {
+                teleport_player_to(g_base_x, g_base_y + kInsideFar);
+            }
+            teleport_cooldown = 1.0f;
+        }
+    }
+
     // Track time without resources
     if (g_water_res <= 0.0f) {
         dehydration_timer += dt;
     } else {
         dehydration_timer = 0.0f; // Reset when water is available
     }
-    
+
     if (g_oxygen <= 0.0f) {
         suffocation_timer += dt;
     } else {
         suffocation_timer = 0.0f; // Reset when oxygen is available
     }
-    
+
     // Damage tick (every second)
     damage_tick += dt;
     if (damage_tick >= 1.0f) {
         damage_tick = 0.0f;
-        
+
         // Suffocation damage - only after 30 seconds without oxygen
         if (suffocation_timer > kDamageDelay) {
             g_player.hp = std::max(0, g_player.hp - 10);
@@ -2284,7 +2741,7 @@ void update_game(float dt) {
                 return;
             }
         }
-        
+
         // Dehydration damage - only after 30 seconds without water
         if (dehydration_timer > kDamageDelay) {
             g_player.hp = std::max(0, g_player.hp - 8);
@@ -2294,14 +2751,18 @@ void update_game(float dt) {
             }
         }
     }
-    
+
     // Warnings when resources are empty (before damage starts)
     // Increased interval from 3s to 5s to reduce spam
     static float warn_timer = 0.0f;
     warn_timer += dt;
     if (warn_timer >= 5.0f) {
         warn_timer = 0.0f;
-        
+
+        if (g_suit_integrity <= 30.0f) {
+            set_toast("Traje se degradando! [F] para reparar (Metal/Componentes)", 2.5f);
+        }
+
         if (g_oxygen <= 0.0f && suffocation_timer < kDamageDelay) {
             int seconds_left = (int)(kDamageDelay - suffocation_timer);
             set_toast("SEM OXIGENIO! Dano em " + std::to_string(seconds_left) + "s!", 2.5f);
@@ -2341,6 +2802,58 @@ void update_game(float dt) {
     // explicit-parameter functions there instead - the highest-value mechanical change of
     // this extraction stage, per the refactor plan.
     update_mining_and_placement(dt);
+
+    // Upgrade de modulo (tecla R, ver try_upgrade_module()) - so quando mirando um modulo
+    // ja construido em alcance, reaproveitando o mesmo raycast que update_mining_and_placement
+    // acabou de atualizar (g_has_target/g_target_x/y/g_target_in_range).
+    if (r_pressed && g_has_target && g_target_in_range) {
+        Block target_block = g_world->get(g_target_x, g_target_y);
+        if (is_module(target_block)) {
+            try_upgrade_module(g_target_x, g_target_y);
+        }
+    }
+
+    // Reparo do traje (tecla F, ver g_suit_integrity) - funciona em qualquer lugar, a
+    // qualquer momento (nao gatilhado so na base) de proposito: a tensao "upgrade (R) vs.
+    // reparo (F)" so existe se puder ser decidida na hora, minerando, sem um desvio ate a
+    // base diluir a escolha.
+    if (f_pressed) {
+        if (g_suit_integrity >= 100.0f) {
+            set_toast("Traje ja esta 100% intacto.", 1.5f);
+        } else {
+            CraftCost repair_cost = get_suit_repair_cost();
+            if (can_afford(repair_cost)) {
+                spend_cost(repair_cost);
+                g_suit_integrity = std::min(100.0f, g_suit_integrity + 25.0f);
+                set_toast("Traje reparado (+25%).", 1.5f);
+            } else {
+                set_toast("Recursos insuficientes pro reparo! (" + module_cost_string(repair_cost) + ")", 1.5f);
+            }
+        }
+    }
+
+    // Refino de Liga (tecla G, ver try_refine_at_workshop()) - so quando mirando uma
+    // Oficina ja construida em alcance, mesmo raycast reaproveitado do R/F acima.
+    if (g_pressed) {
+        if (g_has_target && g_target_in_range && g_world->get(g_target_x, g_target_y) == Block::Workshop) {
+            try_refine_at_workshop(g_target_x, g_target_y);
+        } else {
+            set_toast("Mire numa Oficina construida e no alcance para refinar.", 1.5f);
+        }
+    }
+
+    // Scanner (tecla T, ver scan_for_points_of_interest() em minimap.cpp) - funciona em
+    // qualquer lugar, a qualquer momento, mesmo espirito do F/G: informacao, nao custa
+    // recurso, so cooldown.
+    if (t_pressed) {
+        scan_for_points_of_interest();
+    }
+
+    // Fabricar Pistola de Laser (tecla P, ver try_craft_laser_pistol()) - "de campo", funciona
+    // em qualquer lugar (sem precisar de Oficina, ver comentario na declaracao).
+    if (p_pressed) {
+        try_craft_laser_pistol();
+    }
 }
 
 // ============= Window Procedure / WinMain =============

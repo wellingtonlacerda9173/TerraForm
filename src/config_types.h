@@ -17,41 +17,49 @@
 // main.cpp for now — that is a separate later extraction step (config_io / game_state).
 
 struct TerrainConfig {
-    float macro_scale = 0.00095f;
-    float ridge_scale = 0.0038f;
-    float valley_scale = 0.00145f;
-    float detail_scale = 0.0120f;
-    float warp_scale = 0.0024f;
-    float warp_strength = 19.0f;
+    // NOTA: esses defaults ficavam desatualizados em relacao ao JSON real ha varias sessoes
+    // (so importam no raro caso de escrever E reler o default falharem no mesmo boot) - agora
+    // sincronizados com terrain_config.json/write_default_terrain_config de proposito, ja que
+    // uma dessincronia exatamente assim contribuiu pra uma regressao de terreno nesta sessao.
+    float macro_scale = 0.00045f;
+    float ridge_scale = 0.0032f;
+    float valley_scale = 0.0013f;
+    float detail_scale = 0.0095f;
+    float warp_scale = 0.0022f;
+    float warp_strength = 34.0f;
 
     float macro_weight = 0.50f;
-    float ridge_weight = 0.52f;
-    float valley_weight = 0.58f;
+    float ridge_weight = 0.62f;
+    float valley_weight = 0.64f;
     float detail_weight = 0.06f;
 
     float plateau_level = 0.57f;
-    float plateau_flatten = 0.38f;
+    float plateau_flatten = 0.35f;
 
     float min_height = 2.0f;
-    float max_height = 92.0f;
-    float sea_height = 14.0f;
-    float snow_height = 76.0f;
+    float max_height = 130.0f;
+    float sea_height = 20.0f;
+    float snow_height = 98.0f;
 
-    int thermal_erosion_passes = 5;
-    int hydraulic_erosion_passes = 5;
+    int thermal_erosion_passes = 4;
+    int hydraulic_erosion_passes = 4;
     int smooth_passes = 2;
-    float erosion_strength = 0.40f;
-    float thermal_talus = 0.022f;
+    float erosion_strength = 0.38f;
+    float thermal_talus = 0.021f;
 
     float temp_scale = 0.0016f;
     float moisture_scale = 0.0019f;
-    float biome_blend = 0.18f;
+    float biome_blend = 0.16f;
 
     float fissure_scale = 0.0080f;
     float fissure_depth = 0.060f;
-    float crater_scale = 0.0040f;
-    float crater_depth = 0.055f;
+    float crater_scale = 0.0022f;
+    float crater_depth = 0.11f;
     float detail_object_density = 0.060f;
+
+    // Rios/vulcoes: quantidade de sementes geradas pro mapa (ver World::gen() Passo 3.5).
+    int river_seed_count = 16;
+    int volcano_seed_count = 5;
 };
 
 struct SkyConfig {
@@ -87,8 +95,8 @@ struct SkyConfig {
     float horizon_fade = 0.28f;
 
     float fog_start_factor = 0.34f;
-    float fog_end_factor = 0.88f;
-    float fog_distance_bonus = 36.0f;
+    float fog_end_factor = 0.80f;
+    float fog_distance_bonus = 15.0f;
 
     float eclipse_frequency_days = 8.0f;
     float eclipse_strength = 0.50f;
@@ -117,6 +125,13 @@ struct CameraConfig {
     float pitch_lerp = 0.14f;
     float distance_lerp = 0.14f;
     float lift_lerp = 0.15f;
+    // Suaviza especificamente a altura vertical do foco da camera (nao a posicao X/Z, nem a
+    // do proprio personagem) - sem isso, cada micro-degrau de terreno subido instantaneamente
+    // por try_step_climb (player_physics.cpp) aparecia como um solavanco na camera; subindo
+    // uma ladeira em varios degraus seguidos (dependendo do angulo, cruza mais fronteiras de
+    // tile por metro andado) isso somava e virava a "tremida" reportada. Valor mais baixo =
+    // mais suave (mais atraso), mais alto = segue o jogador mais de perto.
+    float step_height_lerp = 0.22f;
 
     float cave_depth_start = 0.45f;
     float cave_depth_end = 2.60f;
@@ -196,10 +211,26 @@ struct PhysicsConfig {
     float jump_cancel_multiplier = 2.8f;
     float terminal_velocity = 38.0f;
 
+    // Dano de queda: so na transicao aereo->chao (nao repete parado), pousar na agua nunca
+    // doi. min_speed fica acima do que um pulo normal alcanca (jump_velocity=8.1), entao so
+    // quedas de verdade (penhasco, vulcao, jetpack sem combustivel) causam dano.
+    float fall_damage_min_speed = 14.0f;
+    float fall_damage_per_unit = 3.5f;
+    float fall_damage_max = 70.0f;
+
+    // Assistencia de pouso do jato (pedido do jogador: "so ligue poucos segundos/metros
+    // antes de atingir o chao e de aquele efeito de flutuar", rajada instantanea, nao
+    // freio gradual durante a queda inteira - ver apply_single_physics_step,
+    // player_physics.cpp). trigger_height e' a distancia do chao (em unidades de mundo,
+    // "poucos metros") que dispara a rajada; safe_margin e' a folga abaixo de
+    // fall_damage_min_speed que a rajada garante (maior folga = pouso mais suave).
+    float landing_assist_trigger_height = 4.0f;
+    float landing_assist_safe_margin = 1.0f;
+
     float ground_snap = 0.20f;
     float ground_tolerance = 0.06f;
 
-    float step_height = 0.62f;
+    float step_height = 2.0f;
     float step_probe_distance = 0.54f;
 
     float slope_limit_normal_y = 0.70f;
@@ -216,7 +247,13 @@ struct PhysicsConfig {
 
     float terrain_ice_speed = 1.04f;
     float terrain_ice_accel = 0.55f;
-    float terrain_ice_friction = 0.18f;
+    // Separado de terrain_ice_accel de proposito: parar (soltar o movimento) precisa ser
+    // MUITO mais lento que acelerar pra sentir como deslizar por inercia no gelo, nao so
+    // "andar mais devagar". Antes disso o mesmo multiplicador (0.55) era reusado pra
+    // acelerar E desacelerar, e como cfg.ground_deceleration base ja e' alto (22.0), o
+    // jogador ainda parava quase na hora (~0.4s) - sem sensacao nenhuma de gelo escorregadio.
+    float terrain_ice_decel = 0.07f;
+    float terrain_ice_friction = 0.10f;
     float terrain_sand_speed = 0.74f;
     float terrain_sand_accel = 0.80f;
     float terrain_sand_friction = 1.30f;
@@ -235,6 +272,11 @@ struct PhysicsConfig {
     float jetpack_fuel_regen = 25.0f;
     float jetpack_gravity_mult = 0.35f;
     float jetpack_max_up_speed = 6.0f;
+    // Voo horizontal com o jetpack usava a mesma aceleracao/velocidade fraca de uma queda
+    // livre comum (air_acceleration/max_speed sem boost) - dava pra subir rapido mas quase
+    // nao avancava pra frente. Esses dois so entram em jogo quando p.jetpack_active==true.
+    float jetpack_speed_mult = 1.8f;
+    float jetpack_air_accel = 22.0f;
 };
 
 struct BaseConfig {

@@ -21,6 +21,7 @@
 // ---- Shared JSON-ish parsing helpers (generic, no per-config specifics) ----
 bool file_exists(const std::string& path);
 bool parse_json_number(const std::string& text, const char* key, float& out_value);
+bool parse_json_bool(const std::string& text, const char* key, bool& out_value);
 
 // Busca os 4 caminhos candidatos relativos ("<filename>", "..\\<filename>",
 // "..\\..\\<filename>", "..\\..\\..\\<filename>"), retornando o primeiro que existir.
@@ -63,6 +64,16 @@ bool reload_terrain_config(bool create_if_missing);
 bool reload_sky_config(bool create_if_missing);
 bool reload_mining_config(bool create_if_missing);
 bool reload_player_visual_config(bool create_if_missing);
+
+// GameSettings (sensibilidade/brilho/audio/etc, ver game_state.h) - unico config desta
+// familia que tambem precisa SALVAR (os outros 5 sao arquivos ajustaveis a mao pelo
+// desenvolvedor, carregados 1x; este e' alterado pelo proprio jogador no menu de
+// Configuracoes e precisa persistir entre sessoes - pedido do jogador: "o jogo nao guarda
+// minhas configuracoes"). reload_game_settings() segue o mesmo template reload_config<Cfg>
+// dos outros; save_game_settings() escreve o g_settings atual de volta no mesmo arquivo -
+// chamar sempre que o jogador mudar algo no menu (ui_menu.cpp).
+bool reload_game_settings(bool create_if_missing);
+void save_game_settings();
 
 // reload_camera_config is declared here like the other 5, but unlike them its
 // DEFINITION stays in main.cpp (not config_io.cpp). The original function did two

@@ -9,6 +9,7 @@
 #include "modules_building.h"   // ConstructionJob, g_construction_queue, generate_base
 #include "inventory_crafting.h" // g_inventory, g_selected
 #include "objectives.h"         // reset_objectives (new game)
+#include "creatures.h"          // notify_player_respawned
 
 #include <algorithm>
 #include <array>
@@ -76,6 +77,62 @@ PhysicsRuntime g_physics = {};
 
 Vec2 get_player_render_pos() { return g_physics.render_pos; }
 float get_player_render_y() { return g_physics.render_pos_y; }
+
+// g_player_visual_cfg (bob/breathing amplitudes) e' dono de main.cpp - mesmo padrao de
+// extern local ja usado por building_interaction.cpp/creatures.cpp pra globais que nao tem
+// header proprio ainda.
+extern PlayerVisualConfig g_player_visual_cfg;
+
+// Posicao da ponta do cano da Pistola de Laser (ponta brilhante, "barrel2" no bloco de
+// desenho da arma em main.cpp) - replica com fidelidade total a mesma formula usada la pra
+// desenhar a arma na mao (bob/arm_bob/natacao inclusos), usando os valores DE RENDER
+// interpolados (get_player_render_pos/y, g_physics.render_rotation) - nao g_player.pos/pos_y
+// crus, senao a origem do tiro "atrasa" em relacao ao modelo desenhado (fisica roda em
+// passo fixo, o render e' suavizado por frame). Usada por creatures.cpp (origem visual do
+// traco do tiro) e pelo proprio bloco de desenho da arma em main.cpp (dedup - fonte unica).
+Vec3 get_weapon_muzzle_pos() {
+    Vec2 rpos = get_player_render_pos();
+    float rpy = get_player_render_y();
+    float px = rpos.x;
+    float pz = rpos.y;
+
+    int surf_tx = world_to_tile(px);
+    int surf_tz = world_to_tile(pz);
+    Block surf = Block::Dirt;
+    if (g_world && g_world->in_bounds(surf_tx, surf_tz)) {
+        surf = surface_block_at(*g_world, surf_tx, surf_tz);
+    }
+    bool swimming = (surf == Block::Water);
+    float player_y_offset = swimming ? -0.42f : 0.15f;
+    float py = rpy + player_y_offset;
+
+    float rot_rad = g_physics.render_rotation * (kPi / 180.0f);
+    float sin_rot = std::sin(rot_rad);
+    float cos_rot = std::cos(rot_rad);
+    float perp_x = cos_rot;
+    float perp_z = -sin_rot;
+
+    float breath = std::sin(g_player.anim_frame * g_player_visual_cfg.breathing_speed) * g_player_visual_cfg.breathing_amp;
+    float walk_wave = std::sin(g_player.walk_timer * g_player_visual_cfg.walk_bob_speed);
+    float walk_bob = g_player.is_moving ? walk_wave * g_player_visual_cfg.walk_bob_amp : 0.0f;
+    float walk_weight = g_player.is_moving
+        ? std::fabs(std::sin(g_player.walk_timer * 0.5f * g_player_visual_cfg.walk_bob_speed)) * g_player_visual_cfg.walk_weight_amp
+        : 0.0f;
+    float mine_impact = g_player.is_mining ? g_player.mine_anim : 0.0f;
+    float bob = breath + walk_bob - walk_weight - mine_impact * 0.06f;
+    float arm_bob = g_player.is_mining
+        ? std::sin(g_player.mine_anim * 20.0f + g_player.anim_frame * 4.0f) * 0.14f
+        : breath * 0.35f;
+
+    constexpr float kArmSep = 0.28f;
+    float ra_x = px + perp_x * kArmSep;
+    float ra_z = pz + perp_z * kArmSep;
+    float gun_y = py + 0.25f + bob + arm_bob + mine_impact * 0.05f;
+
+    float tip_x = ra_x + sin_rot * 0.32f;
+    float tip_z = ra_z + cos_rot * 0.32f;
+    return {tip_x, gun_y + 0.03f, tip_z};
+}
 
 // ============= Movement / Collision =============
 float approach(float cur, float target, float max_delta) {
@@ -147,6 +204,30 @@ void spawn_player_at_base() {
     g_player.facing_dir = 2; // Olhando para sul
     g_player.w = g_physics_cfg.collider_width;
     g_player.h = g_physics_cfg.collider_depth;
+    set_dome_barrier_side(true); // spawna sempre no centro da cupula - dentro
+    reset_camera_near_player(true);
+    reset_player_physics_runtime(true);
+}
+
+// Teleporte generico pra coordenadas arbitrarias (usado hoje pra cruzar a porta solida da
+// cupula da base) - mesmo corpo de spawn_player_at_base() acima.
+void teleport_player_to(int x, int y) {
+    g_player.pos.x = (float)x;
+    g_player.pos.y = (float)y;
+    g_player.vel = {0.0f, 0.0f};
+    g_player.vel_y = 0.0f;
+    g_player.pos_y = 0.0f;
+    if (g_world && g_world->in_bounds(x, y)) {
+        g_player.pos_y = stack_top_height_at(*g_world, x, y);
+    }
+    g_player.on_ground = true;
+    g_player.can_jump = true;
+    g_player.ground_height = g_player.pos_y;
+    // Recalcula sozinho de que lado da barreira da cupula o destino cai - quem chama (main.cpp,
+    // gatilho da porta) nao precisa saber desse detalhe nem manter o estado em sincronia.
+    float ddx = (float)x - (float)g_base_x;
+    float ddy = (float)y - (float)g_base_y;
+    set_dome_barrier_side((ddx * ddx + ddy * ddy) < (kDomeWallRadius * kDomeWallRadius));
     reset_camera_near_player(true);
     reset_player_physics_runtime(true);
 }
@@ -174,6 +255,10 @@ void respawn_player_at_base(const char* death_reason) {
     // Pequena penalidade nos recursos da base
     g_base_energy = std::max(0.0f, g_base_energy - 10.0f);
     g_base_oxygen = std::max(0.0f, g_base_oxygen - 5.0f);
+
+    // Respawn restaura so' 50 HP (nao 100) - uma criatura ja perseguindo bem na hora seria
+    // injusta, entao concede alguns segundos de graca (creatures.cpp).
+    notify_player_respawned();
 }
 
 void spawn_player_new_game(World& world) {
@@ -196,6 +281,9 @@ void spawn_player_new_game(World& world) {
     g_inventory[(int)Block::Dirt] = 20;
     g_inventory[(int)Block::Stone] = 10;
     g_inventory[(int)Block::Iron] = 5;
+    // Pistola de Laser ja fabricada de fabrica - pedido do jogador, ameaca leve/opcional
+    // deve vir com o meio de lidar com ela desde o inicio, sem exigir fabricacao previa.
+    g_inventory[(int)Block::LaserPistol] = 1;
     g_selected = Block::Dirt;
     
     // Player suit tanks - start full
@@ -313,7 +401,7 @@ static TerrainPhysicsProfile terrain_profile_for(TerrainPhysicsType t, const Phy
         case TerrainPhysicsType::Ice:
             p.speed_mult = cfg.terrain_ice_speed;
             p.accel_mult = cfg.terrain_ice_accel;
-            p.decel_mult = cfg.terrain_ice_accel;
+            p.decel_mult = cfg.terrain_ice_decel;
             p.friction_mult = cfg.terrain_ice_friction;
             p.slide_mult = 1.45f;
             p.label = "Gelo";
@@ -480,8 +568,12 @@ static bool overlaps_blocking_volume(const Player& p, const World& world, const 
     return false;
 }
 
-static bool try_step_climb(Player& p, const World& world, const PhysicsConfig& cfg, const Vec2& move_dir) {
-    if (!p.on_ground) return false;
+static bool try_step_climb(Player& p, const World& world, const PhysicsConfig& cfg, const Vec2& move_dir, bool in_water) {
+    // Nadando (in_water), o jogador nunca fica "on_ground" (esta flutuando, nao encostado no
+    // fundo) - sem essa excecao, step-climb ficava totalmente desativado ao nadar, e uma
+    // margem/praia mesmo baixa virava uma parede invisivel: nao dava pra sair da agua (o
+    // clamp vertical de nadar tambem trava em water_surface_y, abaixo da margem - preso).
+    if (!p.on_ground && !in_water) return false;
     if (vec2_length(move_dir) < 1e-5f) return false;
 
     Vec2 dir = vec2_normalize(move_dir);
@@ -495,6 +587,12 @@ static bool try_step_climb(Player& p, const World& world, const PhysicsConfig& c
         int tx = world_to_tile(sx);
         int tz = world_to_tile(sz);
         if (!world.in_bounds(tx, tz)) return false;
+        // Minerio/pedra/modulos/qualquer coisa empilhada (construida) na frente sempre exige
+        // pulo de verdade, nunca auto-sobe sozinho - so relevo de terreno (degraus do
+        // heightmap) e' step-climbavel. Sem essa checagem, um bloco de minerio no chao virava
+        // um "degrau" como outro qualquer.
+        if (object_block_at(world, tx, tz) != Block::Air) return false;
+        if (world.stack_height_at(tx, tz) > 0) return false;
         float h = sample_support_height(world, sx, sz, p.w * 0.90f, p.h * 0.90f);
         best_front_h = std::max(best_front_h, h);
     }
@@ -516,13 +614,25 @@ static bool try_step_climb(Player& p, const World& world, const PhysicsConfig& c
 }
 
 static void resolve_axis_collision(Player& p, const World& world, const PhysicsConfig& cfg,
-                                   float move_amount, bool axis_x, const Vec2& move_dir) {
+                                   float move_amount, bool axis_x, const Vec2& move_dir, bool in_water) {
     if (move_amount == 0.0f) return;
 
     float skin = cfg.collision_skin;
     float foot_y = p.pos_y + skin;
     float head_y = p.pos_y + cfg.collider_height - skin;
-    float step_allow = p.on_ground ? cfg.step_height : 0.05f;
+    // step_allow so decide se um degrau e pequeno o bastante pra IGNORAR (nao bloquear) sem
+    // sequer chamar try_step_climb - precisa ser pequeno, NAO cfg.step_height, porque o
+    // teste de chao (probe_ground, mais abaixo) so enxerga ate ~cfg.ground_snap+0.3 acima da
+    // posicao atual do jogador. Usar cfg.step_height aqui (como era antes de descobrir este
+    // bug) deixava passar sem bloquear degraus bem maiores que esse alcance de deteccao de
+    // chao - o jogador atravessava o degrau sem nenhum ajuste de altura (try_step_climb
+    // nunca era chamado, ja que so roda quando column_blocks_movement bloqueia de verdade) e
+    // ficava preso, meio enterrado no relevo, sem chao detectado embaixo dele. Agora so uma
+    // tolerancia pequena passa direto; qualquer coisa maior forca a chamada de
+    // try_step_climb (que de fato ajusta p.pos_y na hora), ate o limite real de
+    // cfg.step_height - dai o step-climb cobrir degraus bem mais altos sem essa armadilha.
+    static constexpr float kStepPassThroughTolerance = 0.08f;
+    float step_allow = kStepPassThroughTolerance;
 
     if (axis_x) {
         float front = p.pos.y - p.h * 0.5f + skin;
@@ -537,7 +647,7 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
 
-                if (try_step_climb(p, world, cfg, move_dir)) {
+                if (try_step_climb(p, world, cfg, move_dir, in_water)) {
                     foot_y = p.pos_y + skin;
                     head_y = p.pos_y + cfg.collider_height - skin;
                     float post_step_top = 0.0f;
@@ -556,7 +666,7 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
 
-                if (try_step_climb(p, world, cfg, move_dir)) {
+                if (try_step_climb(p, world, cfg, move_dir, in_water)) {
                     foot_y = p.pos_y + skin;
                     head_y = p.pos_y + cfg.collider_height - skin;
                     float post_step_top = 0.0f;
@@ -583,7 +693,7 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
 
-                if (try_step_climb(p, world, cfg, move_dir)) {
+                if (try_step_climb(p, world, cfg, move_dir, in_water)) {
                     foot_y = p.pos_y + skin;
                     head_y = p.pos_y + cfg.collider_height - skin;
                     float post_step_top = 0.0f;
@@ -602,7 +712,7 @@ static void resolve_axis_collision(Player& p, const World& world, const PhysicsC
                 float tile_top = 0.0f;
                 if (!column_blocks_movement(world, tx, tz, foot_y, head_y, step_allow, tile_top)) continue;
 
-                if (try_step_climb(p, world, cfg, move_dir)) {
+                if (try_step_climb(p, world, cfg, move_dir, in_water)) {
                     foot_y = p.pos_y + skin;
                     head_y = p.pos_y + cfg.collider_height - skin;
                     float post_step_top = 0.0f;
@@ -693,17 +803,67 @@ static void depenetrate_player_horizontal(Player& p, const World& world, const P
     }
 }
 
-static void move_player_horizontal(Player& p, const World& world, const PhysicsConfig& cfg, const Vec2& world_delta, const Vec2& move_dir) {
+// Barreira cilindrica invisivel da cupula da base (kDomeWallRadius, modules_building.h):
+// substitui a tentativa anterior de parede feita de blocos do mundo (contorno serrilhado -
+// uma grade quadrada nunca desenha um circulo liso -, rejeitada 2x pelo usuario mesmo com a
+// malha decorativa por cima). Aqui a colisao e so matematica (distancia ate o centro da
+// cupula), entao o circulo fica perfeitamente liso em qualquer raio - nao ha bloco nenhum,
+// so um clamp radial. Vale em qualquer altura (cilindro "infinito" pra cima) de proposito:
+// sem isso o jetpack deixaria voar por cima da parede (o antigo muro de 3 blocos empilhados
+// tinha exatamente esse furo). Nao ha excecao de angulo pra porta - a porta e so um detalhe
+// visual sempre fechado na malha (render_geodesic_dome); a unica forma de atravessar em
+// qualquer ponto do circulo e o teleporte curto de proximidade (main.cpp).
+//
+// Estado ("devia estar dentro ou fora?") fica guardado aqui, nao so inferido comparando
+// posicao antes/depois do movimento deste frame - assim TODO frame reforca o lado certo
+// (se devia estar dentro e a posicao atual, seja qual for o motivo, ficou fora do raio,
+// empurra de volta - sem depender de ter "pego o exato instante" da travessia). So o
+// teleporte da porta (main.cpp) muda o lado via set_dome_barrier_side().
+//
+// Centro em g_base_x/g_base_y (nao um par de coordenadas separado - ver comentario em
+// modules_building.h): um bug real ja aconteceu aqui por causa disso - existia um par
+// g_shelter_door_x/y separado, so atribuido dentro de generate_base() (so roda num "Novo
+// Jogo"), que ficava preso em 0 (tile de origem do mundo) pra sempre que o processo era
+// reiniciado e o jogador continuava uma save em vez de comecar de novo - desconectando
+// essa barreira (e o gatilho da porta, e a propria malha decorativa) de onde a base
+// realmente estava, sem nenhum erro visivel. g_base_x/g_base_y sao salvos/carregados de
+// verdade (save_load.cpp), entao usa-los direto elimina essa classe de bug.
+static bool s_dome_barrier_inside = true;
+
+void set_dome_barrier_side(bool inside) {
+    s_dome_barrier_inside = inside;
+}
+
+static void apply_dome_barrier(Player& p) {
+    float cx = (float)g_base_x;
+    float cy = (float)g_base_y;
+    float r2 = kDomeWallRadius * kDomeWallRadius;
+
+    float dx = p.pos.x - cx;
+    float dy = p.pos.y - cy;
+    float dist2 = dx * dx + dy * dy;
+    bool now_inside = dist2 < r2;
+
+    if (now_inside == s_dome_barrier_inside) return; // lado certo - so desliza, sem clamp
+
+    float dist = std::sqrt(std::max(dist2, 1e-6f));
+    float target = s_dome_barrier_inside ? (kDomeWallRadius - 0.05f) : (kDomeWallRadius + 0.05f);
+    float scale = target / dist;
+    p.pos.x = cx + dx * scale;
+    p.pos.y = cy + dy * scale;
+}
+
+static void move_player_horizontal(Player& p, const World& world, const PhysicsConfig& cfg, const Vec2& world_delta, const Vec2& move_dir, bool in_water) {
     float max_component = std::max(std::fabs(world_delta.x), std::fabs(world_delta.y));
     int substeps = std::max(1, (int)std::ceil(max_component / std::max(0.05f, cfg.max_move_per_substep)));
     Vec2 step_delta = vec2_scale(world_delta, 1.0f / (float)substeps);
 
     for (int i = 0; i < substeps; ++i) {
         p.pos.x += step_delta.x;
-        resolve_axis_collision(p, world, cfg, step_delta.x, true, move_dir);
+        resolve_axis_collision(p, world, cfg, step_delta.x, true, move_dir, in_water);
 
         p.pos.y += step_delta.y;
-        resolve_axis_collision(p, world, cfg, step_delta.y, false, move_dir);
+        resolve_axis_collision(p, world, cfg, step_delta.y, false, move_dir, in_water);
     }
 
     p.pos.x = std::clamp(p.pos.x, 0.5f, (float)world.w - 1.5f);
@@ -813,53 +973,137 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     GroundProbeResult ground = probe_ground(p, world, cfg, true);
     p.on_ground = ground.grounded;
     p.ground_height = ground.height;
+    // Capturado aqui (nao mutado depois) pra saber, no bloco de pouso la embaixo, se esta e
+    // a transicao aereo->chao (onde dano de queda deve disparar) ou so mais um frame parado
+    // no chao (onde "landing"/"snap" tambem disparam todo frame, sem isso o dano repetiria).
+    bool was_on_ground = ground.grounded;
     g_physics.ground_normal = ground.normal;
     g_physics.terrain = ground.terrain;
 
     TerrainPhysicsProfile terrain = terrain_profile_for(ground.terrain, cfg);
     g_physics.terrain_name = terrain.label;
 
+    // Nadar: dentro de uma coluna de agua liquida, o jogador flutua/nada livremente em vez
+    // de andar no fundo com gravidade normal - sem isso "nadar" seria so andar no leito do
+    // lago (era assim antes desta mudanca). A superficie da agua e sempre o nivel do mar do
+    // mapa inteiro (World::sea_level), nao um valor por coluna - profundidade varia so
+    // porque o fundo (terrain_h) varia por coluna.
+    bool in_water = (ground.terrain == TerrainPhysicsType::Water);
+    float water_surface_y = (float)world.sea_level * kHeightScale;
+
     if (p.on_ground) g_physics.coyote_timer = cfg.coyote_time;
     else g_physics.coyote_timer = std::max(0.0f, g_physics.coyote_timer - fixed_dt);
 
-    if (input.jump_pressed) g_physics.jump_buffer_timer = cfg.jump_buffer;
-    else g_physics.jump_buffer_timer = std::max(0.0f, g_physics.jump_buffer_timer - fixed_dt);
-
-    bool consume_jump = (g_physics.jump_buffer_timer > 0.0f) && (g_physics.coyote_timer > 0.0f);
-    if (consume_jump) {
-        p.vel_y = cfg.jump_velocity;
-        p.on_ground = false;
+    if (in_water) {
         g_physics.jump_buffer_timer = 0.0f;
         g_physics.coyote_timer = 0.0f;
-    }
+        p.jetpack_active = false;
 
-    if (input.jump_released && p.vel_y > 0.0f) {
-        p.vel_y -= cfg.gravity * (cfg.jump_cancel_multiplier - 1.0f) * fixed_dt;
-    }
+        float swim_speed = cfg.jump_velocity * 0.7f;
+        float swim_accel = cfg.jetpack_thrust;
+        if (input.jump_held && !input.descend_held) {
+            p.vel_y = approach(p.vel_y, swim_speed, swim_accel * fixed_dt);
+        } else if (input.descend_held && !input.jump_held) {
+            p.vel_y = approach(p.vel_y, -swim_speed, swim_accel * fixed_dt);
+        } else {
+            // Flutuacao neutra - sem gravidade, so desacelera ate parar (sobe/desce devagar
+            // por inercia, nao afunda feito pedra nem dispara pra cima).
+            p.vel_y = approach(p.vel_y, 0.0f, swim_accel * 0.5f * fixed_dt);
+        }
+    } else {
+        if (input.jump_pressed) g_physics.jump_buffer_timer = cfg.jump_buffer;
+        else g_physics.jump_buffer_timer = std::max(0.0f, g_physics.jump_buffer_timer - fixed_dt);
 
-    bool jetpack_now = !p.on_ground && input.jump_held && p.jetpack_fuel > 0.0f && p.vel_y <= cfg.jump_velocity * 0.60f;
-    p.jetpack_active = jetpack_now;
-    if (jetpack_now) {
-        p.jetpack_fuel = std::max(0.0f, p.jetpack_fuel - cfg.jetpack_fuel_consume * fixed_dt);
-        p.vel_y += cfg.jetpack_thrust * fixed_dt;
-        p.vel_y = std::min(p.vel_y, cfg.jetpack_max_up_speed);
-        p.jetpack_flame_anim += fixed_dt * 15.0f;
-    } else if (p.on_ground) {
-        p.jetpack_fuel = std::min(100.0f, p.jetpack_fuel + cfg.jetpack_fuel_regen * fixed_dt);
-    }
+        bool consume_jump = (g_physics.jump_buffer_timer > 0.0f) && (g_physics.coyote_timer > 0.0f);
+        if (consume_jump) {
+            p.vel_y = cfg.jump_velocity;
+            p.on_ground = false;
+            g_physics.jump_buffer_timer = 0.0f;
+            g_physics.coyote_timer = 0.0f;
+        }
 
-    float gravity_mult = (p.vel_y < 0.0f) ? cfg.fall_multiplier : cfg.rise_multiplier;
-    if (jetpack_now) gravity_mult *= cfg.jetpack_gravity_mult;
-    p.vel_y -= cfg.gravity * gravity_mult * fixed_dt;
-    p.vel_y = std::max(-cfg.terminal_velocity, p.vel_y);
+        if (input.jump_released && p.vel_y > 0.0f) {
+            p.vel_y -= cfg.gravity * (cfg.jump_cancel_multiplier - 1.0f) * fixed_dt;
+        }
+
+        bool jetpack_now = !p.on_ground && input.jump_held && p.jetpack_fuel > 0.0f && p.vel_y <= cfg.jump_velocity * 0.60f;
+
+        // Assistencia de pouso: RAJADA INSTANTANEA disparada so a poucos METROS do chao
+        // (cfg.landing_assist_trigger_height), nao poucos segundos - pedido do jogador:
+        // "o propulsor deve ligar a poucos metros do chao e dar uma rajada bem forte pra
+        // desacelerar de uma vez e nao ja vir desacelerando na queda". A queda ate ali e
+        // livre de verdade (gravidade normal, acelerando) - so no gatilho a velocidade
+        // muda NA HORA (nao gradual) pra uma velocidade segura, e fica segurada (mantida,
+        // sem a gravidade voltar a acelerar) nos poucos frames residuais ate o pouso de
+        // fato. `s_landing_assist_engaged` (estado persistente, resetado no pouso de
+        // verdade abaixo) faz a rajada disparar so 1x por queda - sem ela, a mesma
+        // checagem repetiria (inofensivo pra velocidade, mas geraria poeira repetida).
+        static bool s_landing_assist_engaged = false;
+        float safe_landing_speed = cfg.fall_damage_min_speed - cfg.landing_assist_safe_margin;
+        bool landing_burst_fired_now = false;
+        float burst_impact_speed = 0.0f; // -vel_y no instante do gatilho (antes da rajada resetar)
+
+        if (p.on_ground) {
+            s_landing_assist_engaged = false;
+        } else if (!s_landing_assist_engaged && p.vel_y < 0.0f) {
+            float height_above_ground = p.pos_y - ground.height;
+            if (height_above_ground <= cfg.landing_assist_trigger_height && -p.vel_y > safe_landing_speed) {
+                burst_impact_speed = -p.vel_y;
+                p.vel_y = -safe_landing_speed; // rajada na hora, nao "approach" gradual
+                s_landing_assist_engaged = true;
+                landing_burst_fired_now = true;
+            }
+        }
+
+        p.jetpack_active = jetpack_now || s_landing_assist_engaged;
+        p.landing_assist_active = s_landing_assist_engaged;
+        if (jetpack_now) {
+            p.jetpack_fuel = std::max(0.0f, p.jetpack_fuel - cfg.jetpack_fuel_consume * fixed_dt);
+            p.vel_y += cfg.jetpack_thrust * fixed_dt;
+            p.vel_y = std::min(p.vel_y, cfg.jetpack_max_up_speed);
+            p.jetpack_flame_anim += fixed_dt * 15.0f;
+        } else if (p.on_ground) {
+            p.jetpack_fuel = std::min(100.0f, p.jetpack_fuel + cfg.jetpack_fuel_regen * fixed_dt);
+        }
+
+        if (s_landing_assist_engaged) {
+            // Segura a velocidade segura ate o pouso de fato - gravidade normal nao volta
+            // a acelerar no trechinho final (poucos metros restantes).
+            p.vel_y = std::max(p.vel_y, -safe_landing_speed);
+            p.jetpack_flame_anim += fixed_dt * 15.0f;
+        } else {
+            float gravity_mult = (p.vel_y < 0.0f) ? cfg.fall_multiplier : cfg.rise_multiplier;
+            if (jetpack_now) gravity_mult *= cfg.jetpack_gravity_mult;
+            p.vel_y -= cfg.gravity * gravity_mult * fixed_dt;
+            p.vel_y = std::max(-cfg.terminal_velocity, p.vel_y);
+        }
+
+        if (landing_burst_fired_now) {
+            const float kLandingDustDuration = 1.1f; // deve bater com main.cpp (render)
+            g_physics.landing_dust_timer = kLandingDustDuration;
+            g_physics.landing_dust_pos = {p.pos.x, ground.height, p.pos.y};
+            // Intensidade 0..1: 0 = mal passou do limiar que dispara a rajada (queda
+            // pequena), 1 = vinha na velocidade terminal (queda de verdade) - piso de
+            // 0.25 pra uma queda pequena ainda deixar um respingo visivel, nao efeito zero.
+            float speed_range = std::max(1.0f, cfg.terminal_velocity - safe_landing_speed);
+            float raw_intensity = (burst_impact_speed - safe_landing_speed) / speed_range;
+            g_physics.landing_dust_intensity = std::clamp(raw_intensity, 0.25f, 1.0f);
+        }
+    }
 
     Vec2 move_dir = input.has_move ? vec2_normalize(input.move) : Vec2{0.0f, 0.0f};
     float slope_mult = slope_speed_multiplier(ground.normal, move_dir, cfg);
-    float target_speed = cfg.max_speed * terrain.speed_mult * slope_mult * (input.run ? cfg.run_multiplier : 1.0f);
+    // Voo com jetpack usava a mesma velocidade/aceleracao horizontal fraca de uma queda livre
+    // comum - dava pra subir rapido (jetpack_thrust) mas quase nao avancava pra frente. Com o
+    // jetpack ativo, aplica um boost de velocidade-alvo e usa uma aceleracao bem mais responsiva
+    // (jetpack_air_accel) em vez da air_acceleration padrao.
+    float jetpack_boost = p.jetpack_active ? cfg.jetpack_speed_mult : 1.0f;
+    float target_speed = cfg.max_speed * terrain.speed_mult * slope_mult * (input.run ? cfg.run_multiplier : 1.0f) * jetpack_boost;
     Vec2 target_vel = input.has_move ? vec2_scale(move_dir, target_speed) : Vec2{0.0f, 0.0f};
 
     if (input.has_move) {
-        float accel = p.on_ground ? (cfg.ground_acceleration * terrain.accel_mult) : cfg.air_acceleration;
+        float accel = p.on_ground ? (cfg.ground_acceleration * terrain.accel_mult)
+                                   : (p.jetpack_active ? cfg.jetpack_air_accel : cfg.air_acceleration);
         p.vel.x = approach(p.vel.x, target_vel.x, accel * fixed_dt);
         p.vel.y = approach(p.vel.y, target_vel.y, accel * fixed_dt);
     } else {
@@ -889,7 +1133,8 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
     }
 
     Vec2 horizontal_delta = vec2_scale(p.vel, fixed_dt);
-    move_player_horizontal(p, world, cfg, horizontal_delta, move_dir);
+    move_player_horizontal(p, world, cfg, horizontal_delta, move_dir, in_water);
+    apply_dome_barrier(p);
 
     p.pos_y += p.vel_y * fixed_dt;
 
@@ -898,6 +1143,21 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
         bool landing = (p.vel_y <= 0.0f) && (p.pos_y <= post_ground.height + cfg.ground_tolerance);
         bool snap = (p.vel_y <= 0.0f) && (p.pos_y <= post_ground.height + cfg.ground_snap);
         if (landing || snap) {
+            // Dano de queda: so na transicao aereo->chao (was_on_ground==false), nunca nos
+            // frames seguintes parado no chao (landing/snap disparam todo frame ali). Pousar
+            // na agua (rio/lago/mar) nunca doi - o terrain do post_ground ja diz certinho.
+            if (!was_on_ground && post_ground.terrain != TerrainPhysicsType::Water) {
+                float impact_speed = -p.vel_y; // ainda nao foi zerado neste ponto
+                if (impact_speed > cfg.fall_damage_min_speed) {
+                    float dmg = std::clamp((impact_speed - cfg.fall_damage_min_speed) * cfg.fall_damage_per_unit,
+                                            0.0f, cfg.fall_damage_max);
+                    p.hp = std::max(0, p.hp - (int)std::lround(dmg));
+                    if (p.hp <= 0) {
+                        respawn_player_at_base("Queda");
+                        return;
+                    }
+                }
+            }
             p.pos_y = post_ground.height;
             p.vel_y = 0.0f;
             p.on_ground = true;
@@ -920,6 +1180,53 @@ static void apply_single_physics_step(const PlayerPhysicsInput& input, float fix
         p.vel_y = 0.0f;
         p.on_ground = true;
     }
+
+    // Teto da agua: normalmente nao da pra nadar pra cima e sair flutuando acima do nivel do
+    // mar (evita voo infinito nadando em mar aberto). Mas se tiver chao solido perto (uma
+    // margem/penhasco) mais alto que o nivel do mar, o teto sobe ate esse chao em vez de
+    // travar sempre em water_surface_y - sem essa excecao, uma margem mais alta que
+    // cfg.step_height (que resolve saliencias pequenas, ver try_step_climb) virava parede
+    // intransponivel (bug reportado varias vezes - "cai na agua e nao consigo sair").
+    //
+    // Sondagem DIRECIONAL (nao mais um anel de raios fixos): o heightmap e quantizado em
+    // unidades inteiras e a suavizacao/erosao pode gerar margens em "degraus" - trechos
+    // planos de varios tiles de largura bem no nivel do mar antes de subir de vez. Um anel
+    // de raios fixos (ate 3.0 tiles) podia cair inteiro dentro de um desses trechos ainda
+    // molhados, sem nenhuma amostra tocando chao seco de verdade. Aqui, pra cada direcao,
+    // anda 1 tile de cada vez ate 10 tiles de distancia, checando o TIPO de chao
+    // (world.get_ground) a cada passo - para na primeira posicao seca (nao Water/Ice/Lava)
+    // e usa a altura dali, cobrindo qualquer degrau de ate 10 tiles de largura em vez de so
+    // 3.
+    bool still_in_water = (post_ground.terrain == TerrainPhysicsType::Water);
+    if (still_in_water) {
+        float ceiling = water_surface_y;
+        static const float kShoreDirs[8][2] = {
+            {1.0f, 0.0f}, {-1.0f, 0.0f}, {0.0f, 1.0f}, {0.0f, -1.0f},
+            {0.7071f, 0.7071f}, {-0.7071f, 0.7071f}, {0.7071f, -0.7071f}, {-0.7071f, -0.7071f}
+        };
+        const float kMaxShoreProbeDist = 10.0f;
+        for (const auto& dir : kShoreDirs) {
+            for (float r = 1.0f; r <= kMaxShoreProbeDist; r += 1.0f) {
+                float sx = p.pos.x + dir[0] * r;
+                float sz = p.pos.y + dir[1] * r;
+                int tx = world_to_tile(sx);
+                int tz = world_to_tile(sz);
+                if (!world.in_bounds(tx, tz)) break;
+                Block ground_b = world.get_ground(tx, tz);
+                if (ground_b == Block::Water || ground_b == Block::Ice || ground_b == Block::Lava) continue;
+                float h = sample_support_height(world, sx, sz, p.w * 0.90f, p.h * 0.90f);
+                if (h > ceiling) ceiling = h;
+                break; // achou chao seco nessa direcao - nao precisa ir mais longe nela
+            }
+        }
+        ceiling += cfg.collision_skin;
+        if (p.pos_y > ceiling) {
+            p.pos_y = ceiling;
+            if (p.vel_y > 0.0f) p.vel_y = 0.0f;
+            p.on_ground = false;
+        }
+    }
+    g_physics.submerged = still_in_water && (p.pos_y + cfg.collider_height < water_surface_y);
 
     if (input.has_move) {
         p.target_rotation = std::atan2(move_dir.x, move_dir.y) * (180.0f / kPi);

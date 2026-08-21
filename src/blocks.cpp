@@ -1,7 +1,7 @@
 #include "blocks.h"
 
 bool is_transparent(Block b) {
-    return b == Block::Air || b == Block::Water || b == Block::Leaves ||
+    return b == Block::Air || b == Block::Water || b == Block::Lava || b == Block::Leaves ||
            b == Block::DomeGlass || b == Block::RocketWindow || b == Block::BuildSlot;
 }
 
@@ -16,11 +16,13 @@ bool is_solid(Block b) {
         case Block::Leaves:
         case Block::BuildSlot:
         case Block::LandingPad:
-        case Block::DomeGlass:
         case Block::RocketWindow:
             return false;  // Pode passar por cima
         default:
-            return true;   // Bloqueia movimento (pedra, agua, gelo, modulos, etc)
+            return true;   // Bloqueia movimento (pedra, agua, gelo, modulos, etc) - DomeGlass
+                            // caiu aqui de proposito: janela de verdade bloqueia passagem (era
+                            // false antes, uma combinacao inconsistente com is_walkable() -
+                            // nem parede nem chao - agora vira parede de vidro real).
     }
 }
 
@@ -50,6 +52,7 @@ bool is_ground_like(Block b) {
         case Block::Snow:
         case Block::Ice:
         case Block::Water:
+        case Block::Lava:
         case Block::LandingPad:
         case Block::BuildSlot:
             return true;
@@ -116,6 +119,9 @@ const char* block_name(Block b) {
         case Block::PipeH: return "Tubo";
         case Block::PipeV: return "Tubo";
         case Block::Antenna: return "Antena";
+        case Block::Lava: return "Lava";
+        case Block::RefinedAlloy: return "Liga Refinada";
+        case Block::LaserPistol: return "Pistola de Laser";
         default: return "?";
     }
 }

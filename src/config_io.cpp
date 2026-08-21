@@ -1,4 +1,5 @@
 #include "config_io.h"
+#include "game_state.h" // GameSettings, g_settings (reload_game_settings/save_game_settings)
 
 #include <algorithm>
 #include <cmath>
@@ -20,6 +21,8 @@ extern MiningConfig g_mining_cfg;
 extern std::string g_mining_config_path;
 extern PlayerVisualConfig g_player_visual_cfg;
 extern std::string g_player_visual_config_path;
+extern GameSettings g_settings;
+static std::string g_game_settings_path;
 
 // ============= Shared helpers =============
 // Extracted verbatim from main.cpp (original lines ~3063-3084).
@@ -44,6 +47,21 @@ bool parse_json_number(const std::string& text, const char* key, float& out_valu
     if (end == begin) return false;
     out_value = parsed;
     return true;
+}
+
+bool parse_json_bool(const std::string& text, const char* key, bool& out_value) {
+    std::string needle = "\"";
+    needle += key;
+    needle += "\"";
+    size_t key_pos = text.find(needle);
+    if (key_pos == std::string::npos) return false;
+    size_t colon = text.find(':', key_pos + needle.size());
+    if (colon == std::string::npos) return false;
+    size_t p = colon + 1;
+    while (p < text.size() && (text[p] == ' ' || text[p] == '\t' || text[p] == '\r' || text[p] == '\n')) p++;
+    if (text.compare(p, 4, "true") == 0) { out_value = true; return true; }
+    if (text.compare(p, 5, "false") == 0) { out_value = false; return true; }
+    return false;
 }
 
 // Busca de caminho + fallback de criacao: extraida da logica duplicada 6x no inicio de
@@ -97,9 +115,14 @@ static void write_default_physics_config(const std::string& path) {
 "  \"coyote_time\": 0.10,\n"
 "  \"jump_cancel_multiplier\": 2.8,\n"
 "  \"terminal_velocity\": 38.0,\n"
+"  \"fall_damage_min_speed\": 14.0,\n"
+"  \"fall_damage_per_unit\": 3.5,\n"
+"  \"fall_damage_max\": 70.0,\n"
+"  \"landing_assist_trigger_height\": 4.0,\n"
+"  \"landing_assist_safe_margin\": 1.0,\n"
 "  \"ground_snap\": 0.20,\n"
 "  \"ground_tolerance\": 0.06,\n"
-"  \"step_height\": 0.62,\n"
+"  \"step_height\": 2.0,\n"
 "  \"step_probe_distance\": 0.54,\n"
 "  \"slope_limit_normal_y\": 0.70,\n"
 "  \"slope_slide_accel\": 7.5,\n"
@@ -113,7 +136,8 @@ static void write_default_physics_config(const std::string& path) {
 "  \"rotation_smoothing\": 14.0,\n"
 "  \"terrain_ice_speed\": 1.04,\n"
 "  \"terrain_ice_accel\": 0.55,\n"
-"  \"terrain_ice_friction\": 0.18,\n"
+"  \"terrain_ice_decel\": 0.07,\n"
+"  \"terrain_ice_friction\": 0.10,\n"
 "  \"terrain_sand_speed\": 0.74,\n"
 "  \"terrain_sand_accel\": 0.80,\n"
 "  \"terrain_sand_friction\": 1.30,\n"
@@ -130,7 +154,9 @@ static void write_default_physics_config(const std::string& path) {
 "  \"jetpack_fuel_consume\": 15.0,\n"
 "  \"jetpack_fuel_regen\": 25.0,\n"
 "  \"jetpack_gravity_mult\": 0.35,\n"
-"  \"jetpack_max_up_speed\": 6.0\n"
+"  \"jetpack_max_up_speed\": 6.0,\n"
+"  \"jetpack_speed_mult\": 1.8,\n"
+"  \"jetpack_air_accel\": 22.0\n"
 "}\n";
 }
 
@@ -157,6 +183,11 @@ static void apply_physics_config_overrides(const std::string& text, PhysicsConfi
     setf("coyote_time", cfg.coyote_time);
     setf("jump_cancel_multiplier", cfg.jump_cancel_multiplier);
     setf("terminal_velocity", cfg.terminal_velocity);
+    setf("fall_damage_min_speed", cfg.fall_damage_min_speed);
+    setf("fall_damage_per_unit", cfg.fall_damage_per_unit);
+    setf("fall_damage_max", cfg.fall_damage_max);
+    setf("landing_assist_trigger_height", cfg.landing_assist_trigger_height);
+    setf("landing_assist_safe_margin", cfg.landing_assist_safe_margin);
     setf("ground_snap", cfg.ground_snap);
     setf("ground_tolerance", cfg.ground_tolerance);
     setf("step_height", cfg.step_height);
@@ -174,6 +205,7 @@ static void apply_physics_config_overrides(const std::string& text, PhysicsConfi
 
     setf("terrain_ice_speed", cfg.terrain_ice_speed);
     setf("terrain_ice_accel", cfg.terrain_ice_accel);
+    setf("terrain_ice_decel", cfg.terrain_ice_decel);
     setf("terrain_ice_friction", cfg.terrain_ice_friction);
     setf("terrain_sand_speed", cfg.terrain_sand_speed);
     setf("terrain_sand_accel", cfg.terrain_sand_accel);
@@ -193,6 +225,8 @@ static void apply_physics_config_overrides(const std::string& text, PhysicsConfi
     setf("jetpack_fuel_regen", cfg.jetpack_fuel_regen);
     setf("jetpack_gravity_mult", cfg.jetpack_gravity_mult);
     setf("jetpack_max_up_speed", cfg.jetpack_max_up_speed);
+    setf("jetpack_speed_mult", cfg.jetpack_speed_mult);
+    setf("jetpack_air_accel", cfg.jetpack_air_accel);
 
     float substeps = (float)cfg.max_substeps;
     setf("max_substeps", substeps);
@@ -212,7 +246,7 @@ static void apply_physics_config_overrides(const std::string& text, PhysicsConfi
     cfg.coyote_time = std::clamp(cfg.coyote_time, 0.0f, 0.35f);
     cfg.jump_cancel_multiplier = std::max(1.0f, cfg.jump_cancel_multiplier);
     cfg.terminal_velocity = std::max(1.0f, cfg.terminal_velocity);
-    cfg.step_height = std::clamp(cfg.step_height, 0.0f, 1.25f);
+    cfg.step_height = std::clamp(cfg.step_height, 0.0f, 3.0f);
     cfg.collider_height = std::clamp(cfg.collider_height, 1.0f, 2.5f);
     cfg.collider_width = std::clamp(cfg.collider_width, 0.3f, 1.2f);
     cfg.collider_depth = std::clamp(cfg.collider_depth, 0.3f, 1.2f);
@@ -235,12 +269,12 @@ static void write_default_terrain_config(const std::string& path) {
     if (!f) return;
     f <<
 "{\n"
-"  \"macro_scale\": 0.00085,\n"
-"  \"ridge_scale\": 0.0034,\n"
-"  \"valley_scale\": 0.00140,\n"
-"  \"detail_scale\": 0.0120,\n"
+"  \"macro_scale\": 0.00045,\n"
+"  \"ridge_scale\": 0.0032,\n"
+"  \"valley_scale\": 0.0013,\n"
+"  \"detail_scale\": 0.0095,\n"
 "  \"warp_scale\": 0.0022,\n"
-"  \"warp_strength\": 20.0,\n"
+"  \"warp_strength\": 34.0,\n"
 "  \"macro_weight\": 0.50,\n"
 "  \"ridge_weight\": 0.62,\n"
 "  \"valley_weight\": 0.64,\n"
@@ -250,7 +284,7 @@ static void write_default_terrain_config(const std::string& path) {
 "  \"min_height\": 2.0,\n"
 "  \"max_height\": 130.0,\n"
 "  \"sea_height\": 20.0,\n"
-"  \"snow_height\": 107.0,\n"
+"  \"snow_height\": 98.0,\n"
 "  \"thermal_erosion_passes\": 4,\n"
 "  \"hydraulic_erosion_passes\": 4,\n"
 "  \"smooth_passes\": 2,\n"
@@ -263,7 +297,9 @@ static void write_default_terrain_config(const std::string& path) {
 "  \"fissure_depth\": 0.060,\n"
 "  \"crater_scale\": 0.0022,\n"
 "  \"crater_depth\": 0.11,\n"
-"  \"detail_object_density\": 0.060\n"
+"  \"detail_object_density\": 0.060,\n"
+"  \"river_seed_count\": 16,\n"
+"  \"volcano_seed_count\": 5\n"
 "}\n";
 }
 
@@ -306,6 +342,8 @@ static void apply_terrain_config_overrides(const std::string& text, TerrainConfi
     setf("crater_scale", cfg.crater_scale);
     setf("crater_depth", cfg.crater_depth);
     setf("detail_object_density", cfg.detail_object_density);
+    seti("river_seed_count", cfg.river_seed_count);
+    seti("volcano_seed_count", cfg.volcano_seed_count);
 
     cfg.macro_scale = std::clamp(cfg.macro_scale, 0.0001f, 0.02f);
     cfg.ridge_scale = std::clamp(cfg.ridge_scale, 0.0005f, 0.04f);
@@ -332,6 +370,8 @@ static void apply_terrain_config_overrides(const std::string& text, TerrainConfi
     cfg.crater_scale = std::clamp(cfg.crater_scale, 0.0005f, 0.05f);
     cfg.crater_depth = std::clamp(cfg.crater_depth, 0.0f, 0.4f);
     cfg.detail_object_density = std::clamp(cfg.detail_object_density, 0.0f, 0.4f);
+    cfg.river_seed_count = std::clamp(cfg.river_seed_count, 0, 200);
+    cfg.volcano_seed_count = std::clamp(cfg.volcano_seed_count, 0, 60);
 }
 
 bool reload_terrain_config(bool create_if_missing) {
@@ -348,13 +388,13 @@ static void write_default_sky_config(const std::string& path) {
     if (!f) return;
     f <<
 "{\n"
-"  \"stars_density\": 1650.0,\n"
+"  \"stars_density\": 2600.0,\n"
 "  \"stars_parallax\": 0.008,\n"
 "  \"nebula_alpha\": 0.22,\n"
 "  \"nebula_parallax\": 0.016,\n"
 "  \"cloud_alpha\": 0.20,\n"
 "  \"cloud_parallax\": 0.050,\n"
-"  \"planet_radius\": 160.0,\n"
+"  \"planet_radius\": 210.0,\n"
 "  \"planet_distance\": 1220.0,\n"
 "  \"planet_orbit_speed\": 0.060,\n"
 "  \"planet_parallax\": 0.028,\n"
@@ -374,8 +414,8 @@ static void write_default_sky_config(const std::string& path) {
 "  \"atmosphere_zenith_boost\": 0.24,\n"
 "  \"horizon_fade\": 0.28,\n"
 "  \"fog_start_factor\": 0.34,\n"
-"  \"fog_end_factor\": 0.88,\n"
-"  \"fog_distance_bonus\": 36.0,\n"
+"  \"fog_end_factor\": 0.80,\n"
+"  \"fog_distance_bonus\": 15.0,\n"
 "  \"eclipse_frequency_days\": 8.0,\n"
 "  \"eclipse_strength\": 0.50\n"
 "}\n";
@@ -484,6 +524,7 @@ void write_default_camera_config(const std::string& path) {
 "  \"pitch_lerp\": 0.14,\n"
 "  \"distance_lerp\": 0.14,\n"
 "  \"lift_lerp\": 0.15,\n"
+"  \"step_height_lerp\": 0.22,\n"
 "  \"cave_depth_start\": 0.45,\n"
 "  \"cave_depth_end\": 2.60,\n"
 "  \"enclosed_start\": 0.28,\n"
@@ -528,6 +569,7 @@ void apply_camera_config_overrides(const std::string& text, CameraConfig& cfg) {
     setf("pitch_lerp", cfg.pitch_lerp);
     setf("distance_lerp", cfg.distance_lerp);
     setf("lift_lerp", cfg.lift_lerp);
+    setf("step_height_lerp", cfg.step_height_lerp);
 
     setf("cave_depth_start", cfg.cave_depth_start);
     setf("cave_depth_end", cfg.cave_depth_end);
@@ -568,6 +610,7 @@ void apply_camera_config_overrides(const std::string& text, CameraConfig& cfg) {
     cfg.pitch_lerp = std::clamp(cfg.pitch_lerp, 0.02f, 1.0f);
     cfg.distance_lerp = std::clamp(cfg.distance_lerp, 0.02f, 1.0f);
     cfg.lift_lerp = std::clamp(cfg.lift_lerp, 0.02f, 1.0f);
+    cfg.step_height_lerp = std::clamp(cfg.step_height_lerp, 0.02f, 1.0f);
 
     cfg.cave_depth_start = std::clamp(cfg.cave_depth_start, 0.0f, 10.0f);
     cfg.cave_depth_end = std::clamp(cfg.cave_depth_end, cfg.cave_depth_start + 0.05f, 20.0f);
@@ -728,4 +771,95 @@ bool reload_player_visual_config(bool create_if_missing) {
                                               write_default_player_visual_config,
                                               apply_player_visual_config_overrides,
                                               &g_player_visual_config_path);
+}
+
+// ============= Game Settings (unico config que o jogador altera e precisa SALVAR) =========
+// Os 5 configs acima sao arquivos de ajuste do desenvolvedor (carregados 1x, editados a mao)
+// - GameSettings e' diferente: o jogador muda esses valores pelo menu de Configuracoes
+// (ui_menu.cpp) e espera que persistam entre sessoes (antes desta mudanca, nada disso era
+// salvo - resetava tudo pro padrao a cada vez que o jogo abria).
+static void write_default_game_settings(const std::string& path) {
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) return;
+    f <<
+"{\n"
+"  \"ui_scale\": 1.0,\n"
+"  \"camera_sensitivity\": 0.30,\n"
+"  \"invert_y\": false,\n"
+"  \"brightness\": 1.0,\n"
+"  \"contrast\": 1.0,\n"
+"  \"music_volume\": 0.6,\n"
+"  \"sfx_volume\": 0.8,\n"
+"  \"music_enabled\": true,\n"
+"  \"sfx_enabled\": true,\n"
+"  \"lighting_enabled\": true,\n"
+"  \"lighting_shadows_enabled\": true,\n"
+"  \"lighting_bloom_intensity\": 0.55,\n"
+"  \"lighting_vignette_intensity\": 0.30\n"
+"}\n";
+}
+
+static void apply_game_settings_overrides(const std::string& text, GameSettings& cfg) {
+    auto setf = [&](const char* key, float& value) {
+        float parsed = 0.0f;
+        if (parse_json_number(text, key, parsed)) value = parsed;
+    };
+    auto setb = [&](const char* key, bool& value) {
+        bool parsed = false;
+        if (parse_json_bool(text, key, parsed)) value = parsed;
+    };
+
+    setf("ui_scale", cfg.ui_scale);
+    setf("camera_sensitivity", cfg.camera_sensitivity);
+    setb("invert_y", cfg.invert_y);
+    setf("brightness", cfg.brightness);
+    setf("contrast", cfg.contrast);
+    setf("music_volume", cfg.music_volume);
+    setf("sfx_volume", cfg.sfx_volume);
+    setb("music_enabled", cfg.music_enabled);
+    setb("sfx_enabled", cfg.sfx_enabled);
+    setb("lighting_enabled", cfg.lighting_enabled);
+    setb("lighting_shadows_enabled", cfg.lighting_shadows_enabled);
+    setf("lighting_bloom_intensity", cfg.lighting_bloom_intensity);
+    setf("lighting_vignette_intensity", cfg.lighting_vignette_intensity);
+
+    cfg.ui_scale = std::clamp(cfg.ui_scale, 0.75f, 1.5f);
+    cfg.camera_sensitivity = std::clamp(cfg.camera_sensitivity, 0.05f, 0.5f);
+    cfg.brightness = std::clamp(cfg.brightness, 0.5f, 1.5f);
+    cfg.music_volume = std::clamp(cfg.music_volume, 0.0f, 1.0f);
+    cfg.sfx_volume = std::clamp(cfg.sfx_volume, 0.0f, 1.0f);
+    cfg.lighting_bloom_intensity = std::clamp(cfg.lighting_bloom_intensity, 0.0f, 1.0f);
+    cfg.lighting_vignette_intensity = std::clamp(cfg.lighting_vignette_intensity, 0.0f, 0.6f);
+}
+
+bool reload_game_settings(bool create_if_missing) {
+    return reload_config<GameSettings>("game_settings.json", g_settings, create_if_missing,
+                                        write_default_game_settings,
+                                        apply_game_settings_overrides,
+                                        &g_game_settings_path);
+}
+
+// Escreve o g_settings ATUAL (nao os padroes) - chamado sempre que o jogador muda algo no
+// menu de Configuracoes (ui_menu.cpp), pra persistir na hora sem precisar de um botao
+// "Salvar" separado (mesmo espirito de aplicar audio/camera na hora ja usado ali).
+void save_game_settings() {
+    std::string path = g_game_settings_path.empty() ? "game_settings.json" : g_game_settings_path;
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) return;
+    f <<
+"{\n"
+"  \"ui_scale\": " << g_settings.ui_scale << ",\n"
+"  \"camera_sensitivity\": " << g_settings.camera_sensitivity << ",\n"
+"  \"invert_y\": " << (g_settings.invert_y ? "true" : "false") << ",\n"
+"  \"brightness\": " << g_settings.brightness << ",\n"
+"  \"contrast\": " << g_settings.contrast << ",\n"
+"  \"music_volume\": " << g_settings.music_volume << ",\n"
+"  \"sfx_volume\": " << g_settings.sfx_volume << ",\n"
+"  \"music_enabled\": " << (g_settings.music_enabled ? "true" : "false") << ",\n"
+"  \"sfx_enabled\": " << (g_settings.sfx_enabled ? "true" : "false") << ",\n"
+"  \"lighting_enabled\": " << (g_settings.lighting_enabled ? "true" : "false") << ",\n"
+"  \"lighting_shadows_enabled\": " << (g_settings.lighting_shadows_enabled ? "true" : "false") << ",\n"
+"  \"lighting_bloom_intensity\": " << g_settings.lighting_bloom_intensity << ",\n"
+"  \"lighting_vignette_intensity\": " << g_settings.lighting_vignette_intensity << "\n"
+"}\n";
 }

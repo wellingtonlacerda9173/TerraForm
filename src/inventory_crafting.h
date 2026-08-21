@@ -7,12 +7,11 @@
 
 // ============= Inventory / Crafting =============
 // Extracted verbatim from main.cpp (original lines ~255-258, 1729-1740, 1856-1890,
-// 1898-1918, 2068-2136): the CraftCost struct, the two cost-lookup/cost-string function
-// pairs (get_module_cost/module_cost_string and module_cost/cost_string - see the
-// comment above can_afford() in inventory_crafting.cpp for why there are two similarly
-// named pairs; this is pre-existing duplication from before this refactor, not something
-// this stage fixes), and the can_afford/spend_cost/refund_cost trio (the one function
-// group actually deduplicated in this stage - see inventory_crafting.cpp).
+// 1898-1918, 2068-2136): the CraftCost struct, the cost-lookup/cost-string functions
+// (get_module_cost/module_cost_string/cost_string - a second, cheaper `module_cost()`
+// existed here until this session, when it was found to be a real cost-exploit and removed;
+// get_module_cost() is now the only cost function), and the can_afford/spend_cost/
+// refund_cost trio (deduplicated in an earlier stage - see inventory_crafting.cpp).
 //
 // g_inventory/g_selected move here too: they are read/written far outside crafting logic
 // (mining grants items, HUD/build-menu rendering reads them, save/load serializes them),
@@ -39,16 +38,35 @@ struct CraftCost {
 extern std::array<int, kBlockTypeCount> g_inventory;
 extern Block g_selected;
 
-// Custo de construcao de um modulo (usado pelo sistema de fila de construcao/menu de
-// build - modules_building.cpp).
+// Custo de construcao de um modulo - unica fonte de verdade, usada tanto pelo menu de
+// construcao (modules_building.cpp) quanto pela colocacao instantanea via clique direito
+// (building_interaction.cpp). Ate esta sessao existia um segundo `module_cost()` com custos
+// ~10x mais baratos so pro caminho de clique direito - um exploit real, ja removido (o
+// clique direito continua instantaneo/sem fila, mas agora cobra o mesmo preco).
 CraftCost get_module_cost(Block b);
 std::string module_cost_string(const CraftCost& c);
-
-// Custo "instantaneo" de colocacao via clique direito (caminho alternativo e mais antigo
-// de colocar um modulo - ver nota em main.cpp sobre a inconsistencia entre os dois
-// caminhos de colocacao, fora do escopo desta etapa).
-CraftCost module_cost(Block b);
 std::string cost_string(const CraftCost& c);
+
+// Custo do upgrade de 1 nivel de um modulo ja construido (tecla R, ver
+// try_upgrade_module() em modules_building.h) - mais barato que construir do zero, pesado
+// em Metal/Components/Crystal (a MESMA carteira do reparo de traje abaixo - a tensao de
+// escolha entre os dois e o ponto).
+CraftCost get_module_upgrade_cost(Block b);
+
+// Custo de um "topup" de reparo do traje (tecla F, ver g_suit_integrity em main.cpp) -
+// mesma carteira do upgrade de modulo acima, de proposito.
+CraftCost get_suit_repair_cost();
+
+// Custo de 1 lote de refino (tecla G, numa Oficina construida - ver
+// try_refine_at_workshop() em modules_building.h) - consome minerio bruto, produz
+// Block::RefinedAlloy. Da ao Metal seu 2o uso de verdade (o 1o sendo upgrade/reparo).
+CraftCost get_refine_cost();
+
+// Custo de fabricar a Pistola de Laser (tecla P, numa Oficina construida - ver
+// try_craft_laser_pistol() em modules_building.h). So se paga 1x - g_inventory[LaserPistol]
+// vira 1 (posse), nao um contador que soma. Item de tecnologia avancada: pesado em
+// Metal/Componentes/Cristal.
+CraftCost get_weapon_cost();
 
 bool can_afford(const CraftCost& c);
 void spend_cost(const CraftCost& c);

@@ -10,6 +10,8 @@
 #include "config_io.h"
 #include "textures.h"
 #include "font.h"
+#include "audio.h"
+#include "lighting.h"
 
 // ============= Platform Layer (raylib main loop) =============
 // Migrated from Win32 (WindowProc/WinMain/WGL context setup) to raylib's InitWindow()/
@@ -28,12 +30,9 @@ extern int g_mouse_y;
 extern bool g_mouse_left_clicked;
 extern MiniMapRuntime g_minimap;
 extern MapConfig g_map_cfg;
+extern GameSettings g_settings;
 
-// WORLD_WIDTH/WORLD_HEIGHT: compile-time literals (not mutable state) defined in main.cpp;
-// kept here as this file's own copy rather than shared via extern - same pattern as elsewhere
-// in this codebase.
-static const int WORLD_WIDTH = 768;
-static const int WORLD_HEIGHT = 384;
+// kWorldWidth/kWorldHeight agora vem de world.h (era uma copia local aqui).
 
 // render_world()/update_game() stay DEFINED in main.cpp per the refactor plan - they are the
 // two intentional final orchestrators left there. They lost their HWND/HDC parameters in this
@@ -71,19 +70,17 @@ static void process_input_events() {
         }
     }
 
-    // Mouse-look e sempre ativo durante o jogo (estilo FPS/TPS padrao, consistente com a
-    // mira central ja usada por building_interaction.cpp, que raycasta a partir do centro
-    // da camera e nunca depende da posicao do cursor). Antes disso exigia segurar o botao
-    // do meio pra girar a camera, o que o usuario reportou como "muito limitado" - o cursor
-    // agora fica travado/oculto (DisableCursor) o tempo todo em GameState::Playing e volta a
-    // aparecer normalmente em qualquer outro estado (Menu/Paused/Settings/Dead), que ainda
-    // precisam do cursor livre pra clicar em botoes. So alterna Disable/EnableCursor na
-    // borda da transicao de estado (nao a cada frame) pra evitar side effects redundantes.
-    bool want_capture = (g_state == GameState::Playing);
-    if (want_capture != g_mouse_captured) {
-        g_mouse_captured = want_capture;
-        if (g_mouse_captured) DisableCursor();
-        else EnableCursor();
+    // Mouse-look so enquanto o botao do meio (scroll) estiver pressionado - pedido explicito
+    // do usuario apos testar a variante "sempre ativo" (girava a camera mesmo sem clicar,
+    // o que ele nao queria). DisableCursor()/EnableCursor() hides+trava o cursor no centro
+    // so durante o clique, igual ao comportamento original antes desta sessao.
+    if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) && g_state == GameState::Playing) {
+        g_mouse_captured = true;
+        DisableCursor();
+    }
+    if (IsMouseButtonReleased(MOUSE_BUTTON_MIDDLE)) {
+        g_mouse_captured = false;
+        EnableCursor();
     }
 
     if (g_mouse_captured) {
@@ -119,10 +116,17 @@ int main() {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(1280, 720, "TerraFormer 2D");
     SetWindowMinSize(640, 360);
+    // raylib por padrao trata ESC como "tecla de saida" (WindowShouldClose() vira true na
+    // hora) - isso corria em paralelo com o nosso proprio tratamento de ESC (abrir o menu de
+    // pausa, main.cpp), entao a janela fechava no mesmo aperto de tecla antes do menu
+    // aparecer. Desliga esse atalho embutido - fechar o jogo agora so' acontece via g_quit
+    // (botao "Sair" do menu principal).
+    SetExitKey(KEY_NULL);
 
     // Atlas pixel-art (Minicraft/Minecraft-like) + fonte padrao da raylib.
     init_texture_atlas();
     init_font();
+    init_game_audio();
 
     reload_physics_config(true);
     reload_terrain_config(true);
@@ -131,8 +135,24 @@ int main() {
     reload_mining_config(true);
     reload_player_visual_config(true);
 
+    // GameSettings (sensibilidade/brilho/iluminacao/audio) - unico config desta lista que o
+    // jogador altera em jogo e espera que persista entre sessoes (antes, resetava sempre pro
+    // padrao - "o jogo nao guarda minhas configuracoes"). Aplica nos sistemas de verdade
+    // (camera/iluminacao/audio) logo em seguida, ja que cada um guarda sua PROPRIA copia
+    // "ao vivo" desses valores (g_camera.sensitivity, g_lighting.*, o estado interno de
+    // audio.cpp) - reload_game_settings() so' preenche g_settings, nao empurra sozinho.
+    reload_game_settings(true);
+    g_camera.sensitivity = g_settings.camera_sensitivity;
+    g_lighting.enabled = g_settings.lighting_enabled;
+    g_lighting.shadows_enabled = g_settings.lighting_shadows_enabled;
+    g_lighting.bloom_intensity = g_settings.lighting_bloom_intensity;
+    g_lighting.bloom_enabled = (g_lighting.bloom_intensity > 0.0f);
+    g_lighting.vignette_intensity = g_settings.lighting_vignette_intensity;
+    apply_audio_settings(g_settings.music_volume, g_settings.music_enabled,
+                          g_settings.sfx_volume, g_settings.sfx_enabled);
+
     // Initialize world for menu background
-    g_world = new World(WORLD_WIDTH, WORLD_HEIGHT, 1337);
+    g_world = new World(kWorldWidth, kWorldHeight, 1337);
     spawn_player_new_game(*g_world);
     g_cam_pos = g_player.pos;
     g_state = GameState::Menu;
@@ -146,6 +166,7 @@ int main() {
 
         // Update
         update_game(dt);
+        update_game_audio(dt);
 
         // Render
         BeginDrawing();
@@ -157,6 +178,7 @@ int main() {
     delete g_world;
     g_world = nullptr;
 
+    shutdown_game_audio();
     CloseWindow();
     return 0;
 }
